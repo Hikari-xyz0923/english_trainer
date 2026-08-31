@@ -74,8 +74,12 @@ if "user_id" not in st.session_state:
 # ============================================================
 
 # ---------- 5. 欢迎语 + 输入框 ----------
-st.title("🇬🇧 地道英语思维训练器")
-st.caption(f"你好，{st.session_state['username']}！输入中文或中式英语 → AI 母语导师帮你纠正")
+# 标题 + 署名：用 HTML 的 <small> 把名字做成小号灰字，视觉上"贴"在标题旁
+st.markdown(
+    '# 🇬🇧 地道英语思维训练器 <small>· by Hikari</small>',
+    unsafe_allow_html=True,   # 允许渲染 HTML(不加这行 HTML 会被当纯文本显示出来)
+)
+st.caption(f"你好，{st.session_state['username']}！输入中文或中式英语 → AI 模语导师帮你纠正")
 
 user_input = st.text_area(
     "✍️ 请输入你的中文或中式英语：",
@@ -190,4 +194,7 @@ with st.sidebar:
 
 # ---------- 12. 页脚 ----------
 st.divider()
-st.caption("🇬🇧 地道英语思维训练器 · 数据只保存在本地 history.db，不上传任何服务器")
+st.caption(
+    "🇬🇧 地道英语思维训练器 · 数据只保存在本地,不上传服务器  |  "
+    "© 2026 谢宇哲 · 基于 MIT License 开源"
+)
