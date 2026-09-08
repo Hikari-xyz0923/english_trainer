@@ -46,11 +46,98 @@ def init_db():
             created_at    TEXT NOT NULL
         )
     """)
+    # ---- 表3：用户设置（★ 新增：记住每个用户的词汇量）----
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id    INTEGER PRIMARY KEY,   -- 主键：一个用户只有一行设置
+            vocab_size TEXT NOT NULL            -- 词汇量（文本存储，兼容数字和区间）
+        )
+    """)
+        # ---- 表4：AI 生成的片段仓库（★ 新增）----
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS passages (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            title       TEXT NOT NULL,      -- 标题（AI 起的名）
+            level       TEXT NOT NULL,      -- 难度标签（🌱/🌿/🌳）
+            domain      TEXT NOT NULL,      -- 领域（如"深海科考"）
+            intro       TEXT NOT NULL,      -- 中文导读
+            text        TEXT NOT NULL,      -- 英文正文
+            expressions TEXT NOT NULL,      -- 地道表达（一行一个）
+            words       INTEGER NOT NULL,   -- 词数（展示用）
+            created_by  INTEGER NOT NULL,   -- 谁生成的（只能看自己仓库?不!共享,见下）
+            created_at  TEXT NOT NULL
+        )
+    """)
+    # ---- 表5：生词本（★ 每个用户收编的表达，私人财产）----
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS collected_words (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,       -- 属于哪个用户
+                expression  TEXT NOT NULL,          -- 表达本身
+                meaning     TEXT DEFAULT '',        -- 中文释义
+                source      TEXT DEFAULT '',        -- 出处（哪篇片段）
+                usage       TEXT DEFAULT '',        -- ★ 用法例句（AI 补课用，一步到位）
+                met_count   INTEGER DEFAULT 1,      -- 重遇计数（为12次重遇引擎预留）
+                created_at  TEXT DEFAULT (datetime('now', 'localtime'))
+            )
+        """)
+    conn.commit()
+    conn.close()
+    
 
+def update_word_notes(word_id, user_id, meaning, usage):
+    """把 AI 补课的释义和用法写进生词卡。
+    UPDATE = 修改已有记录；WHERE 同时校验 id 和 user_id（只能改自己的词）。"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE collected_words SET meaning = ?, usage = ? WHERE id = ? AND user_id = ?",
+        (meaning, usage, word_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+# ---------- AI 片段仓库模块（★ 新增）----------
+
+def save_passage(title, level, domain, intro, text, expressions, created_by):
+    """存入一篇 AI 生成的片段（expressions 传列表，存成一行一个）"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO passages (title, level, domain, intro, text, expressions, "
+        "words, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (title, level, domain, intro, text,
+         "\n".join(expressions),                       # 列表 → 换行分隔的文本
+         len(text.split()),                            # 词数现场统计
+         created_by,
+         datetime.now().strftime("%Y-%m-%d %H:%M")),
+    )
     conn.commit()
     conn.close()
 
 
+def get_all_passages():
+    """取出全部 AI 片段（全员共享），最新的在前"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, title, level, domain, intro, text, expressions, words, created_at "
+        "FROM passages ORDER BY id DESC"
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def delete_passage(passage_id):
+    """按编号删除一个 AI 片段。
+    passage_id 是 passages 表里的主键（馆藏编号）。
+    返回实际删中的行数：1 = 删成功；0 = 没匹配到任何行。"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM passages WHERE id = ?", (passage_id,))
+    deleted_count = c.rowcount   # 先出生：接住本条 SQL 实际影响的行数
+    conn.commit()
+    conn.close()
+    return deleted_count         # 后使用：把战果交还给调用方
 # ---------- 练习记录模块（★ 每个函数都必须带上 user_id）----------
 
 def save_record(user_id, input_text, analysis_text):
@@ -223,7 +310,40 @@ def verify_user(username, password):
             return user_id
         return None
 
+# ---------- 词汇量记忆模块（★ 新增）----------
 
+def save_vocab_size(user_id, vocab_size):
+    """保存/更新用户的词汇量（永久记住，存硬盘）。
+    INSERT OR REPLACE = "有则覆盖，无则插入"（upsert）：
+    同一个用户反复保存时永远只有一行最新数据，不会越存越多。
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO user_settings (user_id, vocab_size) VALUES (?, ?)",
+        (user_id, str(vocab_size)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_vocab_size(user_id):
+    """读取记住的词汇量；从没存过返回 None"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT vocab_size FROM user_settings WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def clear_vocab_size(user_id):
+    """忘掉已存的词汇量（用户想重新测评时用）"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 # ---------- 独立测试区（只读，★ 挑战7升级版）----------
 if __name__ == "__main__":
     print("🧪 只读测试中……")
@@ -243,3 +363,60 @@ if __name__ == "__main__":
             kind = "旧·sha256（下次登录自动升级）"
         print(f"  #{user_id} {username} [{kind}]")
         print(f"      指纹：{password_hash}")
+# ==================== 生词本四件套 ====================
+
+def add_collected_word(user_id, expression, meaning="", source=""):
+    """收编一个表达进生词本。已存在则拒绝重复收编，返回 False。"""
+    conn = get_connection()
+    c = conn.cursor()
+    # 先查：这个用户的本子里有没有同款？
+    c.execute("SELECT id FROM collected_words WHERE user_id = ? AND expression = ?",
+              (user_id, expression))
+    if c.fetchone():                      # 查到了 = 已存在
+        conn.close()
+        return False
+    # 没查到 = 新词，正式入库（usage 列用默认值 ''，等 AI 补课再填）
+    c.execute(
+        "INSERT INTO collected_words (user_id, expression, meaning, source) VALUES (?, ?, ?, ?)",
+        (user_id, expression, meaning, source)
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_collected_words(user_id):
+    """取出某用户的全部生词，最新的在前。
+    注意：SELECT 列顺序 = 界面解包顺序，一动两个都要动！"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, expression, meaning, source, met_count, created_at "
+        "FROM collected_words WHERE user_id = ? ORDER BY id DESC",
+        (user_id,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def delete_collected_word(word_id, user_id):
+    """从生词本移除一个词。WHERE 双重校验：只能删自己本子里的词。"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM collected_words WHERE id = ? AND user_id = ?",
+              (word_id, user_id))
+    conn.commit()
+    conn.close()
+
+
+def update_word_notes(word_id, user_id, meaning, usage):
+    """把 AI 补课的释义和用法写进生词卡（UPDATE = 修改已有记录）。"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE collected_words SET meaning = ?, usage = ? WHERE id = ? AND user_id = ?",
+        (meaning, usage, word_id, user_id)
+    )
+    conn.commit()
+    conn.close()
