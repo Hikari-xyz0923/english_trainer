@@ -1,20 +1,18 @@
 # -*- coding: utf-8 -*-
-"""端到端验证：新 prompt 生成一篇「Vocaloid」主题片段，检查主题真的生效。"""
+"""端到端验证：AI 自由选题（不抽池），检查返回的 domain 标签。会花 token，别乱跑。"""
 import sys
 
 sys.path.insert(0, r"C:\Users\15861\Desktop\english_trainer")
 import glm_api
 
-p = glm_api.generate_library_passage(4000, "Vocaloid 虚拟歌手的告别演唱会")
+p = glm_api.generate_library_passage(4000)
+print("AI 自选领域:", p["domain"])
 print("标题:", p["title"])
-print("风格:", p["style"] if "style" in p else "(dict 无 style 键)")
 print("难度:", p["level"])
 print("导读:", p["intro"][:60])
-print("正文前 400 字:")
-print(p["text"][:400])
+print("正文前 300 字:")
+print(p["text"][:300])
 print("...")
-print("表达数:", len(p["expressions"]))
-words = len(p["text"].split())
-print("词数:", words)
-low = any(k in p["text"].lower() for k in ["vocaloid", "virtual singer", "miku", "stage", "concert", "song", "music", "melody"])
-print("主题相关性粗检（含音乐/演出类词）:", low)
+print("词数:", len(p["text"].split()), "| 表达数:", len(p["expressions"]))
+assert p["domain"], "domain 为空"
+print("E2E_OK")

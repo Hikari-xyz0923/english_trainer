@@ -264,16 +264,14 @@ def render_library():
             st.rerun()
 
         if "making_passage" in st.session_state:
-            import random
             from vocabulary_scanner import coverage_report, find_hard_words
-            domain = random.choice(glm_api.READING_DOMAINS)   # 复用荐读的领域池！
-            with st.spinner(f"🤖 正在创作「{domain}」主题片段……"):
+            with st.spinner("🤖 AI 正在自由选题、创作片段……（题材它自己想）"):
                 best_p, best_cov = None, -1    # "历届最佳"：最优片段 + 它的覆盖率
                 last_err = None                # 记下最后一稿为什么失败，别再让界面只说一句"生成失败"
                 # ---- 第一阶段：盲写，最多 3 稿，先摸个高分 ----
                 for attempt in range(3):
                     try:
-                        p = glm_api.generate_library_passage(ai_vocab, domain)
+                        p = glm_api.generate_library_passage(ai_vocab)
                         cov = coverage_report(p["text"], ai_vocab)["coverage"]
                         st.toast(f"第 {attempt + 1} 稿：覆盖率 {cov}%")
                         if cov > best_cov:
@@ -306,7 +304,8 @@ def render_library():
                                "401 = Key 不对或已失效，429 = 额度用尽，"
                                "400/404 = 模型名不可用。")
                 else:
-                    database.save_passage(best_p["title"], best_p["level"], domain,
+                    database.save_passage(best_p["title"], best_p["level"],
+                                          best_p.get("domain", "AI 自由选题"),
                                           best_p["intro"], best_p["text"],
                                           best_p["expressions"],
                                           st.session_state["user_id"])

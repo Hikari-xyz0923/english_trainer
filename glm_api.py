@@ -198,6 +198,7 @@ PASSAGE_FACTORY_PROMPT = """你是英语分级阅读材料编辑，兼风格仿�
 6. 输出严格按以下格式（程序要按此解析，一行都不能错、不能增删标签）：
 
 标题：（吸引人的中英双语标题，如：深夜灯塔 The Lighthouse Keeper）
+领域：（用中文短语概括本篇题材，8 字以内，如：术力口告别演唱会 / 校园悬疑 / 废土唱片店）
 风格：（用一句话注明"本段模仿【风格或作家名】原创"，如：本段模仿海明威风格原创 / 本段用日系轻小说笔法原创）
 难度：🌱入门 或 🌿进阶 或 🌳挑战
 导读：（一句话中文导读，点出你模仿了谁的什么神韵）
@@ -207,20 +208,21 @@ PASSAGE_FACTORY_PROMPT = """你是英语分级阅读材料编辑，兼风格仿�
 （3 个地道表达，每行一个，格式：expression —— 中文解释）"""
 
 
-def generate_library_passage(vocab_size, domain):
-    """生成一段图书馆片段，返回解析好的字典。
+def generate_library_passage(vocab_size):
+    """生成一段图书馆片段（题材由 AI 自由决定，返回时自带 domain 标签）。
     解析失败会抛异常，由界面层弹错误提示。"""
-    import random
-        # ---- 把词汇量换算成 Zipf 门槛，让合约从"模糊叮嘱"升级为"量化条款" ----
+    # ---- 把词汇量换算成 Zipf 门槛，让合约从"模糊叮嘱"升级为"量化条款" ----
     from vocabulary_scanner import vocab_to_threshold
     threshold = vocab_to_threshold(vocab_size)   # 安检和换算都在那个函数里做好了
 
     messages = [
         {"role": "system", "content": PASSAGE_FACTORY_PROMPT},
         {"role": "user", "content":
-            f"读者词汇量约 {vocab_size}。"
-            f"\n\n【本次主题方向】{domain}——围绕它自由发挥，具体情节、人物、"
-            f"切入角度完全由你决定，不必写成说明文。"
+            f"读者词汇量约 {vocab_size}。请开始创作。"
+            f"\n\n【本次主题】完全由你自由决定——想一个新鲜的、出人意料的题材"
+            f"（动漫、虚拟歌手、游戏、校园、科幻、都市传说、日常、体育……都可以，"
+            f"也可以完全跳出这些），写进输出格式的「领域：」那一行。"
+            f"情节、人物、切入角度同样归你，不许俗套开局。"
             f"\n\n【难度量化条款】本文正文中，约 98% 的单词必须是日常生活中"
             f"常见的高频词（Zipf 频率分数高于 {threshold}）；"
             f"仅允许约 2% 的单词稍微罕见一些（Zipf 分数在 {threshold} 附近或略低），"
@@ -241,13 +243,15 @@ def generate_library_passage(vocab_size, domain):
         # ---- 分项验收版解析：每个标签独立处理，一个失败不连坐整份货 ----
     import re
     title, style, level, intro, text, exprs = "", "", "", "", "", []
+    domain = ""
 
     def grab(pattern, source, flags=0):
         """小工具：安全版 re.search——找到了返回内容，找不到返回空字符串"""
         m = re.search(pattern, source, flags)
         return m.group(1).strip() if m else ""
 
-    title = grab(r"标题：\n?(.+?)(?=\n风格：|\s*风格：)", raw)
+    title = grab(r"标题：\n?(.+?)(?=\n领域：|\s*领域：)", raw)
+    domain = grab(r"领域：\n?(.+?)(?=\n风格：|\s*风格：)", raw)
     style = grab(r"风格：\n?(.+?)(?=\n难度：|\s*难度：)", raw)
     level = grab(r"难度：\n?(\S+)", raw)
     intro = grab(r"导读：\n?(.+?)(?=\n正文：|\s*正文：)", raw)
@@ -279,7 +283,10 @@ def generate_library_passage(vocab_size, domain):
 
     if level not in ("🌱入门", "🌿进阶", "🌳挑战"):
         level = "🌿进阶"   # 兜底：标签异常时给中间值
-    return {"title": title, "level": level, "intro": intro, "text": text, "expressions": exprs}
+    if not domain:
+        domain = "AI 自由选题"   # 兜底：模型漏写「领域」行时别空着
+    return {"title": title, "domain": domain, "level": level,
+            "intro": intro, "text": text, "expressions": exprs}
 # ---------- 独立测试区 ----------
 # if __name__ == "__main__" 的意思是：只有"直接运行本文件"时才执行下面的代码；
 # 被 app.py 导入时不会执行。这样可以单独测试本模块，不影响主程序。
