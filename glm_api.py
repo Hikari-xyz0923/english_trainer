@@ -202,49 +202,6 @@ PASSAGE_FACTORY_PROMPT = """你是英语分级阅读材料编辑，兼文学风�
 （3 个地道表达，每行一个，格式：expression —— 中文解释）"""
 
 
-def generate_library_passage(vocab_size):
-    """生成一段图书馆片段——作家与题材由 AI 自主决定（去库版）。
-    返回解析好的字典；解析失败抛异常，由界面层提示重试。"""
-    messages = [
-        {"role": "system", "content": PASSAGE_FACTORY_PROMPT},
-        {"role": "user", "content": f"读者词汇量约 {vocab_size}。请开始创作。"},
-    ]
-    payload = {"model": MODEL, "messages": messages, "temperature": 1.0}
-    headers = {"Content-Type": "application/json",
-               "Authorization": f"Bearer {API_KEY}"}
-    response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-    if response.status_code != 200:
-        raise RuntimeError(f"API 请求失败（{response.status_code}）：{response.text}")
-    raw = response.json()["choices"][0]["message"]["content"]
-
-    # ---- 格式合约解析（原样保留，一行不改！）----
-    import re
-    title, level, intro, text, exprs = "", "", "", "", []
-    try:
-        title = re.search(r"标题：(.+)", raw).group(1).strip()
-        style = re.search(r"风格：(.+)", raw).group(1).strip()   # 新增标签
-        level = re.search(r"难度：(\S+)", raw).group(1).strip()
-        intro = re.search(r"导读：(.+)", raw).group(1).strip()
-        text = re.search(r"正文：\n(.+?)(?=\n表达：)", raw, re.DOTALL).group(1).strip()
-        expr_block = re.search(r"表达：\n(.+)", raw, re.DOTALL).group(1).strip()
-        exprs = [line.strip("- ").strip() for line in expr_block.split("\n") if line.strip()]
-    except AttributeError:
-        # 质检不通过：把 AI 的原始回复前 800 字附带在报错里，方便"抓现场"
-        # raw[:800] = 只取前 800 个字符，防止刷屏
-        raise RuntimeError(
-            "AI 没按约定格式输出，点「生成」重试一次即可。"
-            f"\n\n-------- AI 原始回复（前800字）--------\n{raw[:800]}"
-        )
-
-    if level not in ("🌱入门", "🌿进阶", "🌳挑战"):
-        level = "🌿进阶"
-
-    # 把 AI 自报的风格签名写进 intro（诚实标注：仿写非原著）
-    intro = f"【{style}】{intro}"
-
-    return {"title": title, "level": level, "intro": intro, "text": text, "expressions": exprs}
-
-
 def generate_library_passage(vocab_size, domain):
     """生成一段图书馆片段，返回解析好的字典。
     解析失败会抛异常，由界面层弹错误提示。"""

@@ -1,4 +1,7 @@
-config.py
-history.db
 __pycache__/
 *.pyc
+history.db
+
+# 密钥：只忽略 .env，config.py 本身不含密钥、可以正常提交
+.env
+.env.*

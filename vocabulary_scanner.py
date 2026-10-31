@@ -52,8 +52,10 @@ def get_best_score(low):
         candidates.append(low[:-1])            # confessed → confesse→fallback
         candidates.append(low[:-3] + "y")      # carried → carry
     # 逐个马甲查分，取最高
+    # 注意：这里查的是 cand（当前马甲），不是 low 本身——
+    # 若写成 get_best_score(low) 会自己调自己，无限递归直接崩
     for cand in candidates:
-        s = get_best_score(low)
+        s = zipf_frequency(cand, "en")
         if s > best:
             best = s
     return best
@@ -83,7 +85,9 @@ def find_hard_words(text, vocab_size):
         if len(low) < 2:
             continue
 
-        score = zipf_frequency(low, "en")
+        # ③ 脱掉语法马甲再查分：pounding→pound、stories→story，
+        #    否则变形词会被误判成生词（修复前这里直接查原形，马甲功能等于没生效）
+        score = get_best_score(low)
         # ④ 判定：分数低于门槛 = 超出读者词汇量 = 生词！
         #    score 为 0 说明词表里没有（可能是极罕见词或变形词），也标为生词
         if score < threshold or score == 0:
