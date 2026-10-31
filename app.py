@@ -351,7 +351,7 @@ with tab_detect:
     with col_d1:
         do_detect = st.button("🔍 分析痕迹", type="primary", use_container_width=True)
     with col_d2:
-        do_second = st.button("🤖 让模型给第二意见（约 20 秒）", use_container_width=True)
+        do_second = st.button("✍️ 让模型指出哪几句像模板（约 20 秒）", use_container_width=True)
 
     if do_detect:
         if len(essay.split()) < 40:
@@ -418,51 +418,51 @@ with tab_detect:
                     f"- 平均句长：{s['avg_sent_len']} 词\n"
                     f"- 词汇多样性 MSTTR：{s['msttr']}%（每 50 词算一次不重复词占比，再平均）\n"
                     f"- 中频词（Zipf 3~4.5）占比：{s['mid_freq_ratio']}%\n"
-                    f"- 每句逗号数：{s['comma_per_sentence']}"
+                    f"- 每句逗号数：{s['comma_per_sentence']}\n"
+                    f"- 三项并列：{s.get('triads', 0)} 处｜破折号：{s.get('dashes', 0)} 处｜"
+                    f"名词化：{s.get('nominalizations', 0)} 处｜AI 偏爱词种类：{s.get('ai_word_kinds', 0)} 种"
                 )
 
             # ---- 局限：必须写在界面上，不然会被当成检测器用 ----
             st.info(
-                "**这套信号的适用边界。** 它抓的是「模板腔」和「句子太齐整」，"
-                "不是「AI」本身，所以两类情况必然失效：\n\n"
-                "① AI 刻意模仿文学风格（长句、少连接词、不用套话）——会被判低；\n"
-                "② 人写的正式议论文（句式规整、没有口语）——可能被判高。\n\n"
-                "它适合用来找「哪几句像模板」，不适合拿去指认谁用了 AI。"
+                "**这套信号的适用边界（如实写清楚，别当检测器用）。**\n\n"
+                "它抓的是「模板腔」「句子太齐整」「AI 偏爱词成簇」，不是「AI」本身。"
+                "三种情况必然失效：\n\n"
+                "① **AI 刻意写得像文学**（长短句交错、不用套话）——会被判低。新一代模型越来越擅长这个，"
+                "这条边界只会更宽；\n"
+                "② **人写的正式议论文**（句式规整、不用口语）——可能被判高。"
+                "斯坦福 2023 年那项研究测了 7 个商用检测器，把非母语者写的托福作文误判成 AI 的比例是 "
+                "**61.3%**，母语者只有约 3%——对英语学习者尤其不公平。所以这套东西不能拿去指认谁用了 AI；\n"
+                "③ **被改过、被翻译过、被润色过的文本**——任何一路信号都会被稀释。\n\n"
+                "它适合用来找「哪几句像模板」，然后改掉。想判真假，没有工具能做到——"
+                "OpenAI 自己的检测器 2023 年就因为这个下架了。"
             )
 
-    # ---- 模型第二意见：默认不用，因为它慢，而且它判自己也不准 ----
+    # ---- 模型侧：只做审稿，不做鉴定 ----
+    # 理由写在 ai_detector.py 第五节的注释里：让模型判"是不是 AI 写的"，
+    # 它会把人写的判成 AI、把 AI 写的判成人（HICSS 2026、奥克兰大学 2026 都测过）。
+    # 所以这里不让它下结论，只让它指认句子 + 给改法——这两件事能当场核对。
     if do_second:
         if len(essay.split()) < 40:
             st.warning("⚠️ 至少 40 个英文单词。")
         else:
             with st.spinner("模型正在读这段文字……"):
                 try:
-                    # 把已有的统计结果一起交给模型，让它复核证据而不是凭语感拍结论
+                    # 把已有的统计结果一起交给模型，让它对着证据指认，而不是凭语感拍结论
                     prev_rep = st.session_state.get("detect_report")
                     st.session_state["detect_second"] = ai_detector.second_opinion(essay, prev_rep)
                 except Exception as e:
-                    st.error(f"❌ 第二意见失败：{e}")
+                    st.error(f"❌ 审稿失败：{e}")
 
     if st.session_state.get("detect_second"):
-        st.markdown("#### 🤖 模型的第二意见")
+        st.markdown("#### ✍️ 模型指出的模板句与改法")
         second_text = st.session_state["detect_second"]
         st.markdown(second_text)
 
-        # 模型结论和痕迹分打架时，明说。这种矛盾本身就是最有用的信息：
-        # 说明"问模型"这条路不可靠，可核对的数字才靠得住
-        prev = st.session_state.get("detect_report")
-        if prev and prev.get("ok"):
-            says_human = "更像人" in second_text
-            says_ai = "更像 AI" in second_text
-            score = prev["score"]
-            if (says_human and score >= 60) or (says_ai and score < 35):
-                st.warning(
-                    "⚠️ 模型的判断和上面的痕迹分不一致。"
-                    "这两种结果打架时，以能逐条核对的那个为准——模型的语感没有校准，"
-                    "它会把自己写过的东西判成人写的。"
-                )
-
-        st.caption("模型对自己写过的东西也判不准，这条只当参考，别当结论。")
+        st.caption(
+            "这里故意不让模型下「像不像 AI」的结论：它判不准，"
+            "而且结论没法核对。能让它做的是指认句子和改写——这两样你可以自己回头看原文验。"
+        )
 
 
 # ---------- 9. 页脚 ----------
