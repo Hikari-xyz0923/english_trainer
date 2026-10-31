@@ -7,10 +7,12 @@
 
 import sqlite3
 import hashlib
-import bcrypt                 # 负责把密码变成"指纹"
+import bcrypt                 # 负责把密码变成“指纹"
 from datetime import datetime
+from pathlib import Path
 
-DB_NAME = "history.db"
+# 使用模块所在目录的绝对路径，避免从其他目录启动 Streamlit 时 SQLite 无法打开。
+DB_NAME = str(Path(__file__).resolve().with_name("history.db"))
 
 
 def get_connection():
@@ -81,6 +83,24 @@ def init_db():
                 created_at  TEXT DEFAULT (datetime('now', 'localtime'))
             )
         """)
+        # ---- 表6：打卡记录（user_id+日期 唯一，天然防重复打卡）----
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS checkin_records (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER NOT NULL,
+            checkin_date TEXT NOT NULL
+        )
+    """)
+    # ---- 表7：积分流水账（每笔积分变动都留痕）----
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS point_logs (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            amount     INTEGER NOT NULL,   -- 正数=得，负数=扣
+            reason     TEXT NOT NULL,      -- 事由
+            created_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
     
@@ -420,3 +440,156 @@ def update_word_notes(word_id, user_id, meaning, usage):
     )
     conn.commit()
     conn.close()
+
+
+
+def get_checkin_streak(user_id):
+    """计算连续打卡天数（连击数）。
+    逻辑：从今天（或昨天）开始往回数，日期必须一天不落地连续。
+    今天还没打卡也不慌——只要昨天在连，连击仍然存活（今天打了就续上）。"""
+    conn = get_connection()
+    c = conn.cursor()
+    # 取该用户所有打卡日期，倒序（新→旧）
+    c.execute(
+        "SELECT checkin_date FROM checkin_records WHERE user_id = ? ORDER BY checkin_date DESC",
+        (user_id,)
+    )
+    dates = [row[0] for row in c.fetchall()]
+    conn.close()
+    if not dates:
+        return 0
+    # 用 Python 的日期运算做"连续性检查"
+    import datetime
+    today = datetime.date.today()
+    # 起点容错：如果今天没打，看昨天（连击还活着，等今天续）
+    start = today if dates[0] == today.isoformat() else today - datetime.timedelta(days=1)
+    if dates[0] != start.isoformat():
+        return 0                      # 昨天也没打 → 连击已断
+    streak = 0
+    expected = start
+    for d in dates:                   # 逐天核对：日期必须一天天递减
+        if d == expected.isoformat():
+            streak += 1
+            expected -= datetime.timedelta(days=1)
+        else:
+            break                     # 断了一天，后面全不算
+    return streak
+# ==================== 打卡与积分系统 ====================
+
+def ensure_points_column():
+    """透明迁移：给 users 表补 total_points 列（老用户自动补齐，新表直接建就有）。"""
+    try:
+        conn = get_connection()
+        conn.execute("ALTER TABLE users ADD COLUMN total_points INTEGER DEFAULT 0")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass   # 列已存在 = 老 situations，静默跳过
+
+
+def add_points(user_id, amount, reason):
+    """积分记账：加（正数）或扣（负数），并写入流水账。
+    amount = 变动数值；reason = 事由（如 '每日打卡'）"""
+    conn = get_connection()
+    c = conn.cursor()
+    # ① 给总分加减（SQL 直接算，不读出来再写回——原子操作，不怕并发）
+    c.execute("UPDATE users SET total_points = total_points + ? WHERE id = ?",
+              (amount, user_id))
+    # ② 流水账：每一笔都留痕
+    c.execute(
+        "INSERT INTO point_logs (user_id, amount, reason, created_at) "
+        "VALUES (?, ?, ?, datetime('now', 'localtime'))",
+        (user_id, amount, reason)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_total_points(user_id):
+    """查某用户的当前总积分"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT total_points FROM users WHERE id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def has_checked_in_today(user_id):
+    """判断今天是否已打卡（防止重复打卡刷分）"""
+    conn = get_connection()
+    c = conn.cursor()
+    # date('now','localtime') = 今天的日期字符串，如 '2025-01-15'
+    c.execute(
+        "SELECT id FROM checkin_records WHERE user_id = ? AND checkin_date = date('now','localtime')",
+        (user_id,)
+    )
+    found = c.fetchone()
+    conn.close()
+    return found is not None
+
+
+def do_checkin(user_id, points):
+    """执行打卡：写打卡记录 + 加积分。返回 False = 今天已打过。"""
+    if has_checked_in_today(user_id):
+        return False
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO checkin_records (user_id, checkin_date) "
+        "VALUES (?, date('now','localtime'))",
+        (user_id,)
+    )
+    conn.commit()
+    conn.close()
+    add_points(user_id, points, "每日打卡")
+    return True
+def get_today_stats(user_id):
+    """查用户今天的任务相关行为统计。返回字典：
+    analyzed 今天句子分析次数 / collected 今天收编生词数"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT COUNT(*) FROM records WHERE user_id = ? AND date(created_at) = date('now','localtime')",
+        (user_id,)
+    )
+    analyzed = c.fetchone()[0]           # COUNT(*) 永远返回一行一列
+    c.execute(
+        "SELECT COUNT(*) FROM collected_words WHERE user_id = ? AND date(created_at) = date('now','localtime')",
+        (user_id,)
+    )
+    collected = c.fetchone()[0]
+    conn.close()
+    return {"analyzed": analyzed, "collected": collected}
+
+
+def award_once_today(user_id, amount, reason):
+    """当日首次奖励：同一 reason 今天第一次才发分，之后静默跳过（防刷分）。
+    返回 True = 本次发了分；False = 今天已领过。"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id FROM point_logs WHERE user_id = ? AND reason = ? "
+        "AND date(created_at) = date('now','localtime')",
+        (user_id, reason)
+    )
+    already = c.fetchone()
+    conn.close()
+    if already:
+        return False
+    add_points(user_id, amount, reason)   # 复用记账函数，流水自动留痕
+    return True
+
+
+def task_done_today(user_id, reason):
+    """查某任务今天是否已完成（用于任务清单的 ✅/⬜ 显示）"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id FROM point_logs WHERE user_id = ? AND reason = ? "
+        "AND date(created_at) = date('now','localtime')",
+        (user_id, reason)
+    )
+    found = c.fetchone()
+    conn.close()
+    return found is not None

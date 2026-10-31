@@ -5,3 +5,6 @@ history.db
 # 密钥：只忽略 .env，config.py 本身不含密钥、可以正常提交
 .env
 .env.*
+
+# 目录里套着的旧版副本（与根目录代码重复），不进版本库
+english_trainer/

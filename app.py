@@ -15,7 +15,7 @@ import glm_api
 import database
 import reading_content   # 阅读营素材库（粗测题库 + 名著片段）
 import vst_data          # ★ VST 学术题库（10层×12题）
-
+import rank_system
 
 # ---------- 2. 初始化数据库 ----------
 database.init_db()
@@ -112,6 +112,8 @@ with tab_analyze:
                     st.session_state["last_analysis"] = analysis
                     st.session_state.pop("review_record", None)
                     st.toast("✅ 分析完成，已存入你的历史记录！")
+                    # 完成任务奖励：当日首次分析 +5 分（防刷：重复分析不加）
+                    database.award_once_today(st.session_state["user_id"], 5, "完成句子分析")
                 except Exception as e:
                     st.error(f"❌ 调用 AI 失败：{e}")
 
@@ -498,6 +500,7 @@ with tab_reading:
                     if st.button(f"💎 一键收编全部 {report['hard_count']} 个生词",
                                  key=f"collect_{pid}"):
                         ok, dup = 0, 0
+                        database.award_once_today(st.session_state["user_id"], 2, "收编生词")
                         for w, s in report["unique_hard"]:
                             # 收编时带上出处（哪篇片段），meaning 留空等用户补
                             if database.add_collected_word(
@@ -636,6 +639,67 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+
+        
+
+        # ==================== 🏆 打卡面板 ====================
+        # 透明迁移 + 取数据
+    database.ensure_points_column()
+    pts = database.get_total_points(st.session_state["user_id"])
+    rank = rank_system.points_to_rank(pts)
+    streak = database.get_checkin_streak(st.session_state["user_id"])
+
+    st.markdown(f"### {rank['rank_name']}")
+    st.markdown(f"**{rank['sub_name']}** · {rank['progress']}")
+    st.caption(f"💎 积分 {pts} ｜ 🔥 连击 {streak} 天")
+
+        # 距下次升级的提示
+    if rank["next_need"] is not None:
+        st.progress(min(pts / (pts + rank["next_need"]), 1.0),
+                        text=f"再攒 {rank['next_need']} 分升级")
+    else:
+        st.success("👑 已达最高段位，传奇仍在继续")
+
+        # 打卡按钮：今天没打才亮，打了就变灰（防手滑第二下）
+        already = database.has_checked_in_today(st.session_state["user_id"])
+        if st.button("📅 今日打卡" if not already else "✅ 今日已打卡",
+                     disabled=already, use_container_width=True):
+            # 连击奖励：基础 10 分 + 连击加成
+            bonus = 15 if streak + 1 >= 30 else (5 if streak + 1 >= 3 else 0)
+            database.do_checkin(st.session_state["user_id"], 10 + bonus)
+            if bonus:
+                st.toast(f"打卡成功！+{10 + bonus} 分（含连击奖励 +{bonus}）🎉")
+            else:
+                st.toast("打卡成功！+10 分 📅")
+            st.rerun()
+
+
+                # ==================== 🎯 今日任务 ====================
+        stats = database.get_today_stats(st.session_state["user_id"])
+        already = database.has_checked_in_today(st.session_state["user_id"])
+
+        st.markdown("**🎯 今日任务**")
+        # 任务清单：✅已完成 / ⬜未完成，右侧显示分值
+        task_rows = [
+            ("📅 每日打卡", already, 10),
+            ("🧠 完成 1 次句子分析", database.task_done_today(st.session_state["user_id"], "完成句子分析"), 5),
+            ("💎 收编 1 个生词", database.task_done_today(st.session_state["user_id"], "收编生词"), 2),
+            ("📖 阅读 1 篇 AI 片段", database.task_done_today(st.session_state["user_id"], "阅读片段"), 8),
+        ]
+        done_count = 0
+        for task_name, done, reward in task_rows:
+            if done:
+                done_count += 1
+            st.markdown(f"{'✅' if done else '⬜'} {task_name}　`+{reward}分`")
+
+        # 完成度进度条 + 一句激励
+        st.progress(done_count / len(task_rows),
+                    text=f"今日完成 {done_count}/{len(task_rows)}")
+        if done_count == len(task_rows):
+            st.success("🎉 今日任务全部完成，书虫饱了！")
+        elif done_count == 0:
+            st.caption("新的一天，从一个打卡开始 ✨")
+        st.divider()
 
     # 退出登录：连测评状态一起清干净，防止下一个人看到上一个人的答案
     if st.button("🚪 退出登录", use_container_width=True):
