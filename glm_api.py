@@ -246,6 +246,13 @@ def generate_library_passage(vocab_size, domain):
     intro = grab(r"导读：\n?(.+?)(?=\n正文：|\s*正文：)", raw)
     text  = grab(r"正文：\n?(.+?)(?=\n表达：|\s*表达：|\nexpression|\s*expression)", raw, re.DOTALL)
 
+    # 兜底：模型偶尔不写「表达：」这一段（结尾直接收），此时正文一直到末尾。
+    # 若正文里混进了表达段的小标题（### 💎 地道表达 之类），把它切掉，只留英文正文。
+    if not text:
+        tail = grab(r"正文：\s*\n?(.+)$", raw, re.DOTALL)
+        tail = re.split(r"\n\s*#{0,4}\s*(?:💎\s*)?(?:地道表达|表达|Expressions?)\s*[:：]?\s*\n", tail)[0]
+        text = tail.strip()
+
     # 表达部分：兼容中文「表达：」和 AI 自作主张的英文 expression 写法
     expr_block = grab(r"表达：\n?(.+)", raw, re.DOTALL)
     if not expr_block:

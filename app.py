@@ -386,6 +386,7 @@ with tab_reading:
             domain = random.choice(glm_api.READING_DOMAINS)   # 复用荐读的领域池！
             with st.spinner(f"🤖 正在创作「{domain}」主题片段……"):
                 best_p, best_cov = None, -1    # "历届最佳"：最优片段 + 它的覆盖率
+                last_err = None                # 记下最后一稿为什么失败，别再让界面只说一句"生成失败"
                 # ---- 第一阶段：盲写，最多 3 稿，先摸个高分 ----
                 for attempt in range(3):
                     try:
@@ -396,7 +397,8 @@ with tab_reading:
                             best_p, best_cov = p, cov
                         if cov >= 98:
                             break
-                    except Exception:
+                    except Exception as e:
+                        last_err = e
                         continue
                 # ---- 第二阶段：批改作文——拿具体生词清单，让 AI 定点降难 ----
                 # 盲写摸不到 98% 才启动，最多批改 2 轮
@@ -416,7 +418,10 @@ with tab_reading:
                             break                    # 批改环节出错 → 用现有最优稿兜底
                 # ---- 上架 ----
                 if best_p is None:
-                    st.error("❌ 生成失败，点「生成」再试一次")
+                    st.error(f"❌ 生成失败：{last_err if last_err is not None else '未知原因'}")
+                    st.caption("连续 3 稿都没成功。上面的报错末尾通常是状态码："
+                               "401 = Key 不对或已失效，429 = 额度用尽，"
+                               "400/404 = 模型名不可用。")
                 else:
                     database.save_passage(best_p["title"], best_p["level"], domain,
                                           best_p["intro"], best_p["text"],
