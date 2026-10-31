@@ -16,6 +16,7 @@ import database
 import reading_content   # 阅读营素材库（粗测题库 + 名著片段）
 import vst_data          # ★ VST 学术题库（10层×12题）
 import rank_system
+import ai_detector        # ★ 板块三：作文 AI 痕迹检测
 
 # ---------- 2. 初始化数据库 ----------
 database.init_db()
@@ -84,7 +85,7 @@ if "user_id" not in st.session_state:
 st.title("🇬🇧 地道英语思维训练器")
 st.caption(f"你好，{st.session_state['username']}！句子分析 × 每日阅读，双轨训练地道英语思维")
 
-tab_analyze, tab_reading = st.tabs(["🔍 句子分析", "📖 阅读营"])
+tab_analyze, tab_reading, tab_detect = st.tabs(["🔍 句子分析", "📖 阅读营", "🕵️ AI 痕迹检测"])
 
 
 # ============================================================
@@ -713,6 +714,146 @@ with st.sidebar:
             st.session_state.pop(key, None)
         clear_vst_state()
         st.rerun()
+
+
+# ============================================================
+# 8. 板块三：AI 痕迹检测
+#    设计立场：不给"真假判决"，只给"痕迹清单"。
+#    理由写在 ai_detector.py 顶部——没有任何方法能可靠判断一段文字
+#    是不是 AI 写的，模型判自己都经常判错。所以这里做的是把可以当场
+#    核对的数字摆出来，让人自己看哪些地方像、哪些地方不像。
+# ============================================================
+with tab_detect:
+
+    st.subheader("🕵️ 作文 AI 痕迹检测")
+    st.caption(
+        "贴一段英文，逐条核对「像 AI 的地方」。这里不判真假——"
+        "没有方法能可靠判断一段文字是不是 AI 写的，所以只给数字和原句，判断留给你。"
+    )
+
+    essay = st.text_area(
+        "✍️ 粘贴英文（至少 40 词）",
+        height=260,
+        placeholder="粘贴你想核对的一段英文，比如作业、作文、或者一段 AI 生成的材料……",
+        key="detect_input",
+    )
+
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        do_detect = st.button("🔍 分析痕迹", type="primary", use_container_width=True)
+    with col_d2:
+        do_second = st.button("🤖 让模型给第二意见（约 20 秒）", use_container_width=True)
+
+    if do_detect:
+        if len(essay.split()) < 40:
+            st.warning("⚠️ 至少 40 个英文单词再看。太短的文本，句长和用词分布都不可靠。")
+        else:
+            with st.spinner("正在统计句长、词频和模板短语……"):
+                report = ai_detector.analyze(essay)
+                report["_src"] = essay.strip()[:200]   # 记住这段是分析哪份文本，防止改了内容还显示旧报告
+                st.session_state["detect_report"] = report
+
+    rep = st.session_state.get("detect_report")
+
+    # 文本被改过 → 旧报告作废，别让人看着旧数字以为新文本也是这个分
+    if rep and rep.get("_src") and rep["_src"] != essay.strip()[:200]:
+        st.info("文本已经改过了，点上面的「分析痕迹」重新算一次。")
+        rep = None
+
+    if rep:
+        if not rep.get("ok"):
+            st.warning(f"⚠️ {rep.get('message', '文本太短')}")
+        else:
+            s = rep["stats"]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("痕迹分", f"{rep['score']} / 100")
+            m2.metric("档位", rep["band"])
+            m3.metric("规模", f"{s['words']} 词 · {s['sentences']} 句 · {s['paragraphs']} 段")
+
+            st.progress(rep["score"] / 100, text="分越高，模板痕迹越重（不是概率）")
+
+            if rep["main_reasons"]:
+                st.markdown("**主要依据：**" + "、".join(rep["main_reasons"]))
+
+            if rep["score"] >= 80:
+                st.error("🔴 高度疑似 AI 生成：多句套话 + 句式过于齐整。")
+            elif rep["score"] >= 60:
+                st.warning("🟠 有明显 AI 痕迹：典型作文里不太会这么写。")
+            elif rep["score"] >= 35:
+                st.info("🟡 混合：有些地方像模板，有些地方像人。")
+            else:
+                st.success("🟢 更像人写的：没有明显模板腔，句子长短不齐。")
+
+            # ---- 逐条信号表：每个数字都能当场核对 ----
+            rows = [
+                {
+                    "信号": sig["name"],
+                    "这段文字": sig["value"],
+                    "人写常见": sig["human_hint"],
+                    "AI 常见": sig["ai_hint"],
+                    "判定": sig["verdict"],
+                }
+                for sig in rep["signals"]
+            ]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+            # ---- 证据句：命中的模板表达，连原句一起给 ----
+            if rep["template_hits"]:
+                with st.expander(f"📌 命中的模板化表达（{len(rep['template_hits'])} 处）", expanded=True):
+                    for h in rep["template_hits"]:
+                        st.markdown(f"**{h['phrase']}**")
+                        st.markdown(f"> {h['sentence']}")
+
+            with st.expander("📊 其他统计数字"):
+                st.markdown(
+                    f"- 平均句长：{s['avg_sent_len']} 词\n"
+                    f"- 词汇多样性 MSTTR：{s['msttr']}%（每 50 词算一次不重复词占比，再平均）\n"
+                    f"- 中频词（Zipf 3~4.5）占比：{s['mid_freq_ratio']}%\n"
+                    f"- 每句逗号数：{s['comma_per_sentence']}"
+                )
+
+            # ---- 局限：必须写在界面上，不然会被当成检测器用 ----
+            st.info(
+                "**这套信号的适用边界。** 它抓的是「模板腔」和「句子太齐整」，"
+                "不是「AI」本身，所以两类情况必然失效：\n\n"
+                "① AI 刻意模仿文学风格（长句、少连接词、不用套话）——会被判低；\n"
+                "② 人写的正式议论文（句式规整、没有口语）——可能被判高。\n\n"
+                "它适合用来找「哪几句像模板」，不适合拿去指认谁用了 AI。"
+            )
+
+    # ---- 模型第二意见：默认不用，因为它慢，而且它判自己也不准 ----
+    if do_second:
+        if len(essay.split()) < 40:
+            st.warning("⚠️ 至少 40 个英文单词。")
+        else:
+            with st.spinner("模型正在读这段文字……"):
+                try:
+                    # 把已有的统计结果一起交给模型，让它复核证据而不是凭语感拍结论
+                    prev_rep = st.session_state.get("detect_report")
+                    st.session_state["detect_second"] = ai_detector.second_opinion(essay, prev_rep)
+                except Exception as e:
+                    st.error(f"❌ 第二意见失败：{e}")
+
+    if st.session_state.get("detect_second"):
+        st.markdown("#### 🤖 模型的第二意见")
+        second_text = st.session_state["detect_second"]
+        st.markdown(second_text)
+
+        # 模型结论和痕迹分打架时，明说。这种矛盾本身就是最有用的信息：
+        # 说明"问模型"这条路不可靠，可核对的数字才靠得住
+        prev = st.session_state.get("detect_report")
+        if prev and prev.get("ok"):
+            says_human = "更像人" in second_text
+            says_ai = "更像 AI" in second_text
+            score = prev["score"]
+            if (says_human and score >= 60) or (says_ai and score < 35):
+                st.warning(
+                    "⚠️ 模型的判断和上面的痕迹分不一致。"
+                    "这两种结果打架时，以能逐条核对的那个为准——模型的语感没有校准，"
+                    "它会把自己写过的东西判成人写的。"
+                )
+
+        st.caption("模型对自己写过的东西也判不准，这条只当参考，别当结论。")
 
 
 # ---------- 9. 页脚 ----------
