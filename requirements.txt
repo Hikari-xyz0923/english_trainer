@@ -2,3 +2,4 @@ streamlit
 requests
 bcrypt
 wordfreq
+extra-streamlit-components

@@ -19,6 +19,9 @@ import rank_system
 import ai_detector        # ★ 板块三：作文 AI 痕迹检测
 import reading_tab    # 阅读营四个子页面（原第 7 节拆出）
 from reading_tab import clear_vst_state   # 退出登录时清 VST 状态（与阅读营共用一份）
+import auth            # ★ 登录态持久化（cookie 签名）
+import extra_streamlit_components as stx   # 读写浏览器 cookie 的组件
+from datetime import datetime, timedelta
 
 # ---------- 2. 初始化数据库 ----------
 database.init_db()
@@ -36,10 +39,47 @@ st.set_page_config(
 # 已移到 reading_tab.py（阅读营和退出登录共用一份），从那里 import
 
 
+# ---------- 3.6 登录态持久化（解决"刷新就掉登录"）----------
+# 原理：session_state 随页面刷新清空，但浏览器 cookie 不会。
+# 所以登录成功时把签过名的凭证写进 cookie，刷新后先读它恢复登录态。
+cookie_mgr = stx.CookieManager(key="et_cookie_mgr")
+
+
+def read_auth_cookie():
+    """读登录 cookie：优先 st.context（首次渲染就能拿到，不闪），组件兜底。"""
+    try:
+        val = st.context.cookies.get(auth.COOKIE_NAME)
+        if val:
+            return val
+    except Exception:
+        pass          # AppTest / 无请求上下文时没有 cookies，忽略即可
+    try:
+        return cookie_mgr.get(auth.COOKIE_NAME)
+    except Exception:
+        return None
+
+
+def remember_login(user_id, username):
+    """登录/注册成功后调用：把凭证写进浏览器 cookie，30 天内免登录。"""
+    cookie_mgr.set(
+        auth.COOKIE_NAME,
+        auth.make_token(user_id, username),
+        expires_at=datetime.now() + timedelta(days=auth.MAX_AGE_DAYS),
+    )
+
+
 # ============================================================
-# 4. 登录闸门（原样保留）
+# 4. 登录闸门
 # ============================================================
 if "user_id" not in st.session_state:
+    # 先试试能不能用 cookie 恢复（刷新 / 关掉浏览器再回来都走这里）
+    _token = read_auth_cookie()
+    _restored = auth.parse_token(_token) if _token else None
+    if _restored:
+        st.session_state["user_id"] = _restored[0]
+        st.session_state["username"] = _restored[1]
+        st.rerun()
+
     st.title("🔐 地道英语思维训练器")
     st.caption("登录后开始你的地道英语思维训练")
     tab_login, tab_register = st.tabs(["🔑 登录", "📝 注册"])
@@ -52,6 +92,7 @@ if "user_id" not in st.session_state:
             if user_id is not None:
                 st.session_state["user_id"] = user_id
                 st.session_state["username"] = login_username.strip()
+                remember_login(user_id, login_username.strip())   # ★ 记住这次登录
                 st.rerun()
             else:
                 st.error("用户名或密码错误")
@@ -66,12 +107,15 @@ if "user_id" not in st.session_state:
             else:
                 ok, msg = database.register_user(reg_username, reg_password)
                 if ok:
-                    st.session_state["user_id"] = database.verify_user(reg_username, reg_password)
+                    new_id = database.verify_user(reg_username, reg_password)
+                    st.session_state["user_id"] = new_id
                     st.session_state["username"] = reg_username.strip()
+                    remember_login(new_id, reg_username.strip())  # ★ 注册完直接记住
                     st.rerun()
                 else:
                     st.error(msg)
 
+    st.info("💡 登录一次后，30 天内刷新页面、重开浏览器都不用再登。共用电脑请点侧边栏「退出登录」。")
     st.stop()
 
 
@@ -267,8 +311,13 @@ with st.sidebar:
         st.caption("新的一天，从一个打卡开始 ✨")
     st.divider()
 
-    # 退出登录：连测评状态一起清干净，防止下一个人看到上一个人的答案
+    # 退出登录：删掉浏览器里的 cookie + 清 session 状态
+    # 只清 session 不清 cookie 的话，一刷新就会被 cookie 自动登回来
     if st.button("🚪 退出登录", use_container_width=True):
+        try:
+            cookie_mgr.delete(auth.COOKIE_NAME)
+        except Exception:
+            pass
         for key in ["user_id", "username", "last_input", "last_analysis",
                     "review_record", "vocab_result", "vst_result"]:
             st.session_state.pop(key, None)
