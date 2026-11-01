@@ -35,6 +35,10 @@ st.set_page_config(
     page_title="地道英语思维训练器",
     page_icon="🇬🇧",
     layout="wide",
+    # ★ 必须显式 expanded。默认是 "auto"——窗口一窄就自动折叠侧边栏，
+    #   打卡按钮、段位、任务清单全在侧边栏里，折叠了等于用户看不到今天该干什么。
+    #   （而且折叠后左上角只剩一个图标按钮，靠它才能展开。）
+    initial_sidebar_state="expanded",
 )
 
 # 样式必须在任何内容之前注入，否则首帧会闪一下默认样式

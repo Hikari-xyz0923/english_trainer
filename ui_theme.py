@@ -35,14 +35,25 @@ BASE_CSS = """
    靠 "Material Symbols Rounded" 字体的 ligature 把单词渲染成图形。
    一旦被换成普通字体，ligature 失效，页面上就把 "arrow_down" 当单词画出来——
    每个折叠面板标题前面叠着的那个 "_arrow_down" 就是这个原因。 */
-html, body, [class*="st-"]:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]){
+html, body,
+[class*="st-"]:not([data-testid^="stIcon"]):not([class*="material-symbols"]):not([translate="no"]){
   font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
               "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
 }
 
-/* 图标字体兜底：即便有别的规则误伤，也把图形字体抢回来 */
-[data-testid="stIconMaterial"],
-[class*="material-symbols"]{
+/* 图标字体兜底：即便有别的规则误伤，也把图形字体抢回来。
+   ★ 只写 [data-testid="stIconMaterial"] 是不够的：Streamlit 的图标组件是
+     `"data-testid": t.testid || "stIconMaterial"`——testid 可被调用方覆盖
+     （侧边栏折叠按钮就覆盖了），精确匹配会漏掉它们。
+     所以用三条互补的钩子：
+       ① [data-testid^="stIcon"]  —— 覆盖所有 stIcon* 命名的图标
+       ② [class*="material-symbols"] —— 覆盖新版按类名挂的图标
+       ③ [translate="no"] —— 图标组件的固定属性，无关 testid，最可靠
+     translate 这条是决定性的：之前侧边栏那个 double_arrow_right，
+     只有它才匹配得上。 */
+[data-testid^="stIcon"],
+[class*="material-symbols"],
+span[translate="no"]{
   font-family:"Material Symbols Rounded" !important;
   font-weight:normal !important;
   font-style:normal !important;
