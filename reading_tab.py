@@ -15,10 +15,12 @@ import vst_data
 
 
 def clear_vst_state():
-    """清空所有 VST 相关的 session_state（app.py 的退出登录也用这份）。"""
-for key in list(st.session_state.keys()):
-    if key.startswith("vst_"):
-        st.session_state.pop(key, None)
+    """清空所有 VST 相关的 session_state（app.py 的退出登录也用这份）。
+    注意：函数体必须有缩进——之前 for 循环掉到模块级，这里等于空函数，
+    退出登录时一个 vst_ 状态都没清掉。"""
+    for key in list(st.session_state.keys()):
+        if key.startswith("vst_"):
+            st.session_state.pop(key, None)
 
 
 

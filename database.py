@@ -101,6 +101,17 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    # ---- 表8：错误标签（错误画像的缓存，避免每次打开都重新调 AI）----
+    # record_id 做主键：一条记录只归一次类，重复写会覆盖（重扫时用得上）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS error_tags (
+            record_id  INTEGER PRIMARY KEY,
+            user_id    INTEGER NOT NULL,   -- 冗余存一份，查某人的标签不用 join
+            tags       TEXT NOT NULL,      -- 逗号分隔的错误类型，如 "介词,冠词"
+            note       TEXT DEFAULT '',    -- 一句话说明（AI 给的错误点摘要）
+            created_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
     
@@ -227,12 +238,79 @@ def export_records(user_id):
 
 
 def clear_all_records(user_id):
-    """清空【这个人】的记录（别人的不受影响）"""
+    """清空【这个人】的记录（别人的不受影响）
+    错误标签是记录的附属品——记录没了，标签也得跟着走，
+    否则重扫时会拿旧标签配新记录（id 会被 AUTOINCREMENT 复用吗？不会，
+    但留着孤儿行会让统计里凭空多出几类错误）。"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM records WHERE user_id = ?", (user_id,))
+    cursor.execute("DELETE FROM error_tags WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
+
+
+# ---------- 错误画像：标签的存与取 ----------
+
+def get_untagged_records(user_id, limit=15):
+    """取出还没归过类的记录（老的先归，保证顺序稳定）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT r.id, r.input_text, r.analysis_text, r.created_at "
+        "FROM records r LEFT JOIN error_tags t ON r.id = t.record_id "
+        "WHERE r.user_id = ? AND t.record_id IS NULL "
+        "ORDER BY r.id ASC LIMIT ?",
+        (user_id, limit),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def count_untagged(user_id):
+    """还有多少条没归类（界面上显示"待扫描 N 条"）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) FROM records r LEFT JOIN error_tags t ON r.id = t.record_id "
+        "WHERE r.user_id = ? AND t.record_id IS NULL",
+        (user_id,),
+    )
+    n = cursor.fetchone()[0]
+    conn.close()
+    return n
+
+
+def save_error_tags(user_id, items):
+    """批量写入归类结果。items = [(record_id, "介词,冠词", "说明"), ...]
+    用 INSERT OR REPLACE：同一条重复归类时以最后一次为准。"""
+    if not items:
+        return 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.executemany(
+        "INSERT OR REPLACE INTO error_tags (record_id, user_id, tags, note, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [(rid, user_id, tags, note, now) for rid, tags, note in items],
+    )
+    conn.commit()
+    conn.close()
+    return len(items)
+
+
+def get_error_tags(user_id):
+    """取出这个人全部归类结果：[(record_id, tags, note), ...]"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT record_id, tags, note FROM error_tags WHERE user_id = ?",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 
 # ---------- 用户管理模块 ----------
@@ -458,6 +536,9 @@ def get_checkin_streak(user_id):
     conn.close()
     if not dates:
         return 0
+    # 去重：万一同一天写进两条（手动补数据、并发打卡都会造成），
+    # 逐天核对会在"同一天出现两次"那里卡住，连击直接算成 1 天。
+    dates = sorted(set(dates), reverse=True)
     # 用 Python 的日期运算做"连续性检查"
     import datetime
     today = datetime.date.today()
@@ -593,3 +674,71 @@ def task_done_today(user_id, reason):
     found = c.fetchone()
     conn.close()
     return found is not None
+
+
+# ==================== 成长页 / 任务页：读明细 ====================
+# 上面那些函数只回答"一共多少分"，成长页要的是"这些分都是怎么来的"。
+
+def get_point_logs(user_id, limit=20):
+    """积分流水，新的在前。返回 [(金额, 事由, 时间), ...]
+
+    为什么不一并返回总分：总分查 users.total_points 一句就够，
+    这里只负责"明细"，两件事分开查，缓存逻辑才不会互相拖累。
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT amount, reason, created_at FROM point_logs "
+        "WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+        (user_id, int(limit))
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_checkin_dates(user_id, days=42):
+    """最近 days 天里打过卡的日期集合（'YYYY-MM-DD'）。
+
+    返回集合而不是列表：日历要对每一天问"这天打了吗"，
+    集合是 O(1) 判断，列表每次都得扫一遍。
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT checkin_date FROM checkin_records "
+        "WHERE user_id = ? AND checkin_date >= date('now','localtime', ?)",
+        (user_id, f"-{int(days)} day")
+    )
+    dates = {row[0] for row in c.fetchall()}
+    conn.close()
+    return dates
+
+
+def get_points_by_day(user_id, days=7):
+    """最近 days 天每天的得分合计。返回 {'2026-11-01': 25, ...}
+
+    没有得分的那天不会出现在字典里——调用方按 .get(day, 0) 取，
+    专门用来区分"这天 0 分"和"这天压根没数据"。
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT date(created_at) AS d, SUM(amount) FROM point_logs "
+        "WHERE user_id = ? AND date(created_at) >= date('now','localtime', ?) "
+        "GROUP BY d",
+        (user_id, f"-{int(days) - 1} day")
+    )
+    rows = c.fetchall()
+    conn.close()
+    return {r[0]: r[1] for r in rows if r[0]}
+
+
+def get_total_checkins(user_id):
+    """累计打卡天数（历史总和，和"连击"不是一回事：断签也保留）"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM checkin_records WHERE user_id = ?", (user_id,))
+    n = c.fetchone()[0]
+    conn.close()
+    return n

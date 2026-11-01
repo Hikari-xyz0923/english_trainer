@@ -43,6 +43,29 @@ SYSTEM_PROMPT = """你是一位资深英语母语导师，专门帮助中国学�
 """
 
 
+# ---------- 通用对话：给"临时任务"用 ----------
+# 上面那些函数都是"一个任务一套提示词"的老写法。错误画像这类新功能
+# 只需要"给我一段 system + 一段 user，把回答拿来"，不必每次都复制一遍
+# 组装 payload / 发请求 / 拆 JSON 的三段式，所以抽这个通用口子出来。
+def chat(system_prompt, user_content, temperature=0.3, timeout=90):
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": temperature,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_KEY}",
+    }
+    response = requests.post(API_URL, headers=headers, json=payload, timeout=timeout)
+    if response.status_code != 200:
+        raise RuntimeError(f"API 请求失败（{response.status_code}）：{response.text[:200]}")
+    return response.json()["choices"][0]["message"]["content"]
+
+
 # ---------- 核心函数：调用 GLM 分析用户的输入 ----------
 def analyze_english(user_input):
     """

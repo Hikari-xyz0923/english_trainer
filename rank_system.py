@@ -61,4 +61,10 @@ def points_to_rank(points):
         "global_level": rank_idx * 3 + sub_idx + 1,    # 全局等级 1~21
         "next_need": next_need,
         "progress": f"{rank['members'][sub_idx]}（{rank_idx * 3 + sub_idx + 1}/21级）",
+        # ↓ 下面四个是给"成长历程"页画阶梯和进度条用的，
+        #   上面的老字段一个没动，侧边栏那段代码不用改。
+        "rank_index": rank_idx,                          # 第几个大段（0 起）
+        "sub_index": sub_idx,                            # 大段内第几小段（0/1/2）
+        "seg_start": rank["threshold"],                  # 本大段起点分
+        "seg_end": seg_end,                              # 本大段终点分（=下一大段门槛）
     }

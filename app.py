@@ -17,10 +17,13 @@ import reading_content   # 阅读营素材库（粗测题库 + 名著片段）
 import vst_data          # ★ VST 学术题库（10层×12题）
 import rank_system
 import ai_detector        # ★ 板块三：作文 AI 痕迹检测
+import error_profile      # ★ 板块四：个人错误画像（把历史记录归类统计）
 import reading_tab    # 阅读营四个子页面（原第 7 节拆出）
 from reading_tab import clear_vst_state   # 退出登录时清 VST 状态（与阅读营共用一份）
 import auth            # ★ 登录态持久化（cookie 签名）
 import extra_streamlit_components as stx   # 读写浏览器 cookie 的组件
+import ui_theme        # ★ 视觉层：全局 CSS + 顶部状态条
+import progress_pages  # ★ 顶部卡片点进去的两个界面：成长历程 / 今日任务
 from datetime import datetime, timedelta
 
 # ---------- 2. 初始化数据库 ----------
@@ -33,6 +36,9 @@ st.set_page_config(
     page_icon="🇬🇧",
     layout="wide",
 )
+
+# 样式必须在任何内容之前注入，否则首帧会闪一下默认样式
+ui_theme.inject_css()
 
 
 # ---------- 3.5 清理 VST 答题状态的小工具 ----------
@@ -120,12 +126,46 @@ if "user_id" not in st.session_state:
 
 
 # ============================================================
-# 5. 已登录：标题 + 双板块
+# 5. 已登录：顶部状态条 + 三大板块
 # ============================================================
-st.title("🇬🇧 地道英语思维训练器")
-st.caption(f"你好，{st.session_state['username']}！句子分析 × 每日阅读，双轨训练地道英语思维")
+# 这些数字原本只在侧边栏算，导致第一屏看不到"我今天该干什么"。
+# 提到这里算一次，hero 和侧边栏共用，避免两处各算一遍、状态不一致。
+_uid = st.session_state["user_id"]
+database.ensure_points_column()
+_pts = database.get_total_points(_uid)
+_rank = rank_system.points_to_rank(_pts)
+_streak = database.get_checkin_streak(_uid)
+_checked_today = database.has_checked_in_today(_uid)
+_task_rows = [
+    ("📅 每日打卡", _checked_today, 10),
+    ("🧠 完成 1 次句子分析", database.task_done_today(_uid, "完成句子分析"), 5),
+    ("💎 收编 1 个生词", database.task_done_today(_uid, "收编生词"), 2),
+    ("📖 阅读 1 篇 AI 片段", database.task_done_today(_uid, "阅读片段"), 8),
+]
+_done_count = sum(1 for _n, _d, _r in _task_rows if _d)
 
-tab_analyze, tab_reading, tab_detect = st.tabs(["🔍 句子分析", "📖 阅读营", "🕵️ AI 痕迹检测"])
+ui_theme.hero(st.session_state["username"], _rank["rank_name"],
+              _pts, _streak, _done_count, len(_task_rows))
+
+# ------------------------------------------------------------
+# 5.5 视图切换：顶部四张卡点进去的两个界面
+#     为什么用 st.stop() 而不是把下面 380 行全缩进进一个 if：
+#       缩进整块代码只是多一次出错机会（漏缩进一行就是 IndentationError），
+#       而 st.stop() 的语义更直白——"这个视图不该再往下画了"。
+#     为什么不用 ?view= 的链接跳转：那会整页重载，session_state 全丢。
+# ------------------------------------------------------------
+_view = st.session_state.get("view", "home")
+
+if _view == "growth":
+    progress_pages.render_growth(_uid)
+    st.stop()
+elif _view == "quests":
+    progress_pages.render_quests(_uid)
+    st.stop()
+
+tab_analyze, tab_reading, tab_detect, tab_profile = st.tabs(
+    ["🔍 句子分析", "📖 阅读营", "🕵️ AI 痕迹检测", "🩺 错误画像"]
+)
 
 
 # ============================================================
@@ -204,27 +244,70 @@ with tab_reading:
         reading_tab.render_words()
 
 # ============================================================
-# 8. 侧边栏（新增：显示最新测评结果）
+# 8. 侧边栏
+#    顺序按"每天真正会看的东西"排：我是谁 → 今天干了什么 → 历史 → 危险操作。
+#    原版把历史记录堆在最上面，每天打卡要往下滚，是反的。
 # ============================================================
 with st.sidebar:
-    st.title("📚 历史记录")
-    st.caption(f"👤 当前用户：{st.session_state['username']}")
-
-    # ★ 新增：把测评结果常驻显示在这里，每天打开都能看到自己的水平
+    # ---------- 账号 ----------
+    st.markdown(f"### 👤 {st.session_state['username']}")
     if "vst_result" in st.session_state:
-        st.caption(f"📏 我的词汇量：约 {st.session_state['vst_result']:,} 词（🎓VST）")
+        st.caption(f"词汇量：约 {st.session_state['vst_result']:,} 词（VST）")
     elif "vocab_result" in st.session_state:
-        level_name, vocab_range, _ = st.session_state["vocab_result"]
-        st.caption(f"📏 我的词汇水平：{level_name}（⚡粗测）")
+        _lvl, _range, _rec = st.session_state["vocab_result"]
+        st.caption(f"词汇水平：{_lvl}（粗测）")
+    else:
+        st.caption("还没测过词汇量")
 
-    current_user_id = st.session_state["user_id"]
-    count = database.get_record_count(current_user_id)
-    st.caption(f"已保存练习：{count} 条")
+    st.divider()
 
-    records = database.get_all_records(current_user_id)
+    # ==================== 🏆 段位 + 打卡 ====================
+    st.markdown(f"**{_rank['rank_name']}**")
+    st.caption(f"{_rank['sub_name']} · {_rank['progress']}")
+    st.caption(f"💎 积分 {_pts} ｜ 🔥 连击 {_streak} 天")
+
+    if _rank["next_need"] is not None:
+        st.progress(min(_pts / (_pts + _rank["next_need"]), 1.0),
+                    text=f"再攒 {_rank['next_need']} 分升级")
+    else:
+        st.success("👑 已达最高段位，传奇仍在继续")
+
+    # 打卡按钮：今天没打才亮，打了就变灰（防手滑第二下）
+    if st.button("📅 今日打卡" if not _checked_today else "✅ 今日已打卡",
+                 disabled=_checked_today, use_container_width=True):
+        # 连击奖励：基础 10 分 + 连击加成
+        _bonus = 15 if _streak + 1 >= 30 else (5 if _streak + 1 >= 3 else 0)
+        database.do_checkin(_uid, 10 + _bonus)
+        if _bonus:
+            st.toast(f"打卡成功！+{10 + _bonus} 分（含连击奖励 +{_bonus}）🎉")
+        else:
+            st.toast("打卡成功！+10 分 📅")
+        st.rerun()
+
+    # ==================== 🎯 今日任务 ====================
+    st.markdown("**🎯 今日任务**")
+    # 任务清单：✅已完成 / ⬜未完成，右侧显示分值
+    for _task_name, _done, _reward in _task_rows:
+        st.markdown(f"{'✅' if _done else '⬜'} {_task_name}　`+{_reward}分`")
+
+    st.progress(_done_count / len(_task_rows),
+                text=f"今日完成 {_done_count}/{len(_task_rows)}")
+    if _done_count == len(_task_rows):
+        st.success("🎉 今日任务全部完成，书虫饱了！")
+    elif _done_count == 0:
+        st.caption("新的一天，从一个打卡开始 ✨")
+
+    st.divider()
+
+    # ==================== 📚 历史记录 ====================
+    count = database.get_record_count(_uid)
+    st.markdown(f"**📚 历史记录**")
+    st.caption(f"已保存 {count} 条")
+
+    records = database.get_all_records(_uid)
 
     if len(records) == 0:
-        st.info("还没有记录，快去完成第一次练习吧！")
+        st.caption("还没有记录，完成第一次句子分析就会出现在这里。")
     else:
         for record in records:
             record_id, input_text, analysis_text, created_at = record
@@ -235,80 +318,21 @@ with st.sidebar:
                 st.caption(f"🕒 {created_at}")
                 st.markdown(analysis_text)
 
-    st.divider()
+    # 导出 / 清空收进折叠区：用得少，但误点代价大
+    with st.expander("⚙️ 记录管理"):
+        if count > 0:
+            st.download_button(
+                label="⬇️ 导出全部记录（Markdown）",
+                data=database.export_records(_uid),
+                file_name=f"{st.session_state['username']}的英语练习记录.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        confirm = st.checkbox("确认要清空全部历史吗？")
+        if st.button("🗑️ 清空历史", disabled=not confirm, use_container_width=True):
+            database.clear_all_records(_uid)
+            st.rerun()
 
-    if count > 0:
-        st.download_button(
-            label="⬇️ 导出全部记录（Markdown）",
-            data=database.export_records(current_user_id),
-            file_name=f"{st.session_state['username']}的英语练习记录.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
-
-    confirm = st.checkbox("确认要清空全部历史吗？")
-    if st.button("🗑️ 清空历史", disabled=not confirm):
-        database.clear_all_records(current_user_id)
-        st.rerun()
-
-    st.divider()
-
-    # ==================== 🏆 打卡面板 ====================
-    # 透明迁移 + 取数据
-    database.ensure_points_column()
-    pts = database.get_total_points(st.session_state["user_id"])
-    rank = rank_system.points_to_rank(pts)
-    streak = database.get_checkin_streak(st.session_state["user_id"])
-
-    st.markdown(f"### {rank['rank_name']}")
-    st.markdown(f"**{rank['sub_name']}** · {rank['progress']}")
-    st.caption(f"💎 积分 {pts} ｜ 🔥 连击 {streak} 天")
-
-    # 距下次升级的提示
-    if rank["next_need"] is not None:
-        st.progress(min(pts / (pts + rank["next_need"]), 1.0),
-                        text=f"再攒 {rank['next_need']} 分升级")
-    else:
-        st.success("👑 已达最高段位，传奇仍在继续")
-
-    # 打卡按钮：今天没打才亮，打了就变灰（防手滑第二下）
-    already = database.has_checked_in_today(st.session_state["user_id"])
-    if st.button("📅 今日打卡" if not already else "✅ 今日已打卡",
-                 disabled=already, use_container_width=True):
-        # 连击奖励：基础 10 分 + 连击加成
-        bonus = 15 if streak + 1 >= 30 else (5 if streak + 1 >= 3 else 0)
-        database.do_checkin(st.session_state["user_id"], 10 + bonus)
-        if bonus:
-            st.toast(f"打卡成功！+{10 + bonus} 分（含连击奖励 +{bonus}）🎉")
-        else:
-            st.toast("打卡成功！+10 分 📅")
-        st.rerun()
-
-    # ==================== 🎯 今日任务 ====================
-    stats = database.get_today_stats(st.session_state["user_id"])
-    already = database.has_checked_in_today(st.session_state["user_id"])
-
-    st.markdown("**🎯 今日任务**")
-    # 任务清单：✅已完成 / ⬜未完成，右侧显示分值
-    task_rows = [
-        ("📅 每日打卡", already, 10),
-        ("🧠 完成 1 次句子分析", database.task_done_today(st.session_state["user_id"], "完成句子分析"), 5),
-        ("💎 收编 1 个生词", database.task_done_today(st.session_state["user_id"], "收编生词"), 2),
-        ("📖 阅读 1 篇 AI 片段", database.task_done_today(st.session_state["user_id"], "阅读片段"), 8),
-    ]
-    done_count = 0
-    for task_name, done, reward in task_rows:
-        if done:
-            done_count += 1
-        st.markdown(f"{'✅' if done else '⬜'} {task_name}　`+{reward}分`")
-
-    # 完成度进度条 + 一句激励
-    st.progress(done_count / len(task_rows),
-                text=f"今日完成 {done_count}/{len(task_rows)}")
-    if done_count == len(task_rows):
-        st.success("🎉 今日任务全部完成，书虫饱了！")
-    elif done_count == 0:
-        st.caption("新的一天，从一个打卡开始 ✨")
     st.divider()
 
     # 退出登录：删掉浏览器里的 cookie + 清 session 状态
@@ -319,7 +343,7 @@ with st.sidebar:
         except Exception:
             pass
         for key in ["user_id", "username", "last_input", "last_analysis",
-                    "review_record", "vocab_result", "vst_result"]:
+                    "review_record", "vocab_result", "vst_result", "view"]:
             st.session_state.pop(key, None)
         clear_vst_state()
         st.rerun()
@@ -463,6 +487,72 @@ with tab_detect:
             "这里故意不让模型下「像不像 AI」的结论：它判不准，"
             "而且结论没法核对。能让它做的是指认句子和改写——这两样你可以自己回头看原文验。"
         )
+
+
+# ============================================================
+# 8.9 板块四：错误画像
+#    数据来源是"句子分析"的历史记录——每条分析里本来就写清了错在哪，
+#    这里把那些错因归成固定几类、数一数、排个序。
+#    立场：只描述"你在哪类错误上反复"，不评价水平。
+# ============================================================
+with tab_profile:
+
+    st.subheader("🩺 我的错误画像")
+    st.caption(
+        "把每次练习的错因归类、排序。知道自己反复栽在哪一类上，"
+        "比多写十句更有用——因为下一句很可能还是同一个坑。"
+    )
+
+    prof = error_profile.build_profile(_uid)
+
+    if prof["records_total"] == 0:
+        st.info("还没有练习记录。先去「🔍 句子分析」写几句，回来这里就有东西可看了。")
+    else:
+        # ---- 归类入口：只在有未归类记录时出现 ----
+        if prof["untagged"] > 0:
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                st.markdown(
+                    f"有 **{prof['untagged']} 条**记录还没归类"
+                    f"（已归类 {prof['records_tagged']} 条）。"
+                )
+            with c2:
+                scan = st.button("🔍 开始归类", type="primary", use_container_width=True)
+            if scan:
+                with st.spinner(f"正在读这 {prof['untagged']} 条记录，归到固定类别……"):
+                    n, errs = error_profile.classify_pending(_uid)
+                if n:
+                    st.toast(f"✅ 归好 {n} 条")
+                for e in errs:
+                    st.warning(f"有一批没成功：{e}")
+                st.rerun()
+            st.divider()
+
+        if not prof["ranked"]:
+            st.caption("点上面的「开始归类」，我才能给这些记录分类。")
+        else:
+            top = prof["ranked"][0]
+            st.markdown(f"### 最常犯的是「{top['type']}」")
+            st.caption(f"占全部错误命中的 {top['pct']}%　——　{top['hint']}")
+            ui_theme.bar_chart(prof["ranked"])
+            st.caption(
+                f"统计口径：一共 {prof['total_hits']} 次错误命中，来自 "
+                f"{prof['records_tagged']} 条已归类记录。一条记录可能同时算进两类"
+                f"（既缺介词又漏冠词），所以百分比加总是 100%，但命中次数会多于记录数。"
+            )
+
+            st.divider()
+            st.markdown("**每一类的具体例子**")
+            for item in prof["ranked"]:
+                with st.expander(f"{item['type']} · {item['count']} 次 · {item['pct']}%"):
+                    st.caption(item["hint"])
+                    if item["samples"]:
+                        for s in item["samples"]:
+                            st.markdown(f"> {s['input']}")
+                            if s["note"]:
+                                st.caption(f"↳ {s['note']}　（{s['time']}）")
+                    else:
+                        st.caption("（这批记录里没有可展示的原句）")
 
 
 # ---------- 9. 页脚 ----------
