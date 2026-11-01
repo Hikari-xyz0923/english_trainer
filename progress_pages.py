@@ -80,9 +80,12 @@ def render_growth(user_id):
     elif rank["next_need"] <= 20:
         st.caption(f"还差 **{rank['next_need']} 分**就升级——今天打卡一次就够。")
     else:
+        # 一天做满是多少分，从 TASKS 现算——写死 25 的话，加一项任务就会对不上
+        daily_max = sum(t[2] for t in TASKS)
         st.caption(
             f"还差 **{rank['next_need']} 分**升级。"
-            f"按每天把四项任务做满（约 25 分）算，大概 {max(1, round(rank['next_need'] / 25))} 天。"
+            f"按每天把 {len(TASKS)} 项任务做满（约 {daily_max} 分）算，"
+            f"大概 {max(1, round(rank['next_need'] / daily_max))} 天。"
         )
 
     st.divider()
@@ -193,17 +196,20 @@ TASKS = [
     ("🧠", "完成 1 次句子分析", 5, "去「🔍 句子分析」随便写一句英文"),
     ("💎", "收编 1 个生词", 2, "分析结果里点「收编」存进生词本"),
     ("📖", "阅读 1 篇 AI 片段", 8, "去「📖 阅读营」打开一篇并读完"),
+    ("🔁", "复习一组生词", 3, "去「📖 阅读营 → 生词本」点「开始复习」"),
 ]
 
 # 任务名 → 查"今天做没做"用的 point_logs.reason
-TASK_REASONS = [None, "完成句子分析", "收编生词", "阅读片段"]
+TASK_REASONS = [None, "完成句子分析", "收编生词", "阅读片段", "复习生词"]
 
 
 def render_quests(user_id):
-    """今日四项任务 + 近七天得分 + 加分规则。"""
+    """今日任务 + 近七天得分 + 加分规则。"""
+    _daily_total = sum(t[2] for t in TASKS)
     _page_head(
         "🎯 今日任务",
-        "四项做完一共 25 分。清单每天零点自动重置——断了不可惜，明天再来。",
+        f"{len(TASKS)} 项做完一共 {_daily_total} 分。"
+        "清单每天零点自动重置——断了不可惜，明天再来。",
     )
 
     checked_today = database.has_checked_in_today(user_id)
@@ -226,7 +232,7 @@ def render_quests(user_id):
 
     st.write("")
 
-    # ---- 四张任务卡 ----
+    # ---- 任务卡 ----
     parts = []
     for (icon, name, reward, tip), is_done in zip(TASKS, done_flags):
         cls = "quest done" if is_done else "quest"
@@ -307,4 +313,4 @@ def _week_bars(user_id, days=7):
     st.markdown(f'<div class="week">{"".join(rows)}</div>', unsafe_allow_html=True)
 
     hit = sum(1 for k in by_day if k)
-    st.caption(f"最近七天有 {hit} 天拿到过分。空条不代表没学，只代表那天没触发这四项。")
+    st.caption(f"最近七天有 {hit} 天拿到过分。空条不代表没学，只代表那天没触发这几项。")

@@ -30,12 +30,37 @@ BASE_CSS = """
 }
 
 /* ---- 字体：中文优先用系统黑体，避免 Streamlit 默认字体把中文渲染得很散 ---- */
-html, body, [class*="st-"]{
+/* ★ 这里必须排除图标元素（data-testid="stIconMaterial"）。
+   图标 span 里装的不是文字，是连字名（"arrow_down"、"keyboard_arrow_down"），
+   靠 "Material Symbols Rounded" 字体的 ligature 把单词渲染成图形。
+   一旦被换成普通字体，ligature 失效，页面上就把 "arrow_down" 当单词画出来——
+   每个折叠面板标题前面叠着的那个 "_arrow_down" 就是这个原因。 */
+html, body, [class*="st-"]:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]){
   font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
               "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
 }
 
+/* 图标字体兜底：即便有别的规则误伤，也把图形字体抢回来 */
+[data-testid="stIconMaterial"],
+[class*="material-symbols"]{
+  font-family:"Material Symbols Rounded" !important;
+  font-weight:normal !important;
+  font-style:normal !important;
+  letter-spacing:normal !important;
+  text-transform:none !important;
+  line-height:1 !important;
+  white-space:nowrap;
+  direction:ltr;
+  -webkit-font-smoothing:antialiased;
+  -webkit-font-feature-settings:"liga";
+  font-feature-settings:"liga";
+}
+
 /* ---- 版心：默认太宽，正文行长超过 100 字符就很难读 ---- */
+/* ★ Streamlit 1.62 把主容器 testid 从 stAppViewBlockContainer 改成了
+   stMainBlockContainer。写旧名字的话这条规则静默失效（不报错、也不生效），
+   版心会退回默认 750px——第一版就是这样白改的。两个都写上，兼容旧版。 */
+[data-testid="stMainBlockContainer"],
 [data-testid="stAppViewBlockContainer"]{
   padding-top:2.4rem; padding-bottom:3rem; max-width:1040px;
 }
@@ -47,29 +72,47 @@ h2{ font-weight:600 !important; font-size:1.3rem !important; letter-spacing:-.01
 h3{ font-weight:600 !important; font-size:1.05rem !important; }
 
 /* ---- tab：默认是带下划线的方标签，改成胶囊（更像产品不像后台） ---- */
-.stTabs [data-baseweb="tab-list"]{ gap:6px; border-bottom:none; }
-.stTabs [data-baseweb="tab"]{
-  height:36px; padding:0 16px; border-radius:999px;
+/* ★ 1.62 去掉了 baseweb，tab 的 DOM 变成 role="tablist" + [data-testid="stTab"]。
+   原来写 [data-baseweb="tab"] 一个都匹配不到，胶囊化从来没生效过。
+   选中态靠 aria-selected，不是 [aria-selected] 里的 arbitrary value。 */
+[data-testid="stTabs"] [role="tablist"]{
+  gap:6px; border-bottom:none;
+}
+[data-testid="stTab"]{
+  height:34px; padding:0 14px !important; border-radius:999px;
   color:var(--muted); font-weight:500;
+  transition:background .15s ease, color .15s ease;
 }
-.stTabs [aria-selected="true"]{
-  background:var(--brand-soft); color:var(--brand) !important;
+[data-testid="stTab"]:hover{ background:rgba(26,26,24,.04); }
+[data-testid="stTab"][aria-selected="true"]{
+  background:var(--brand-soft);
 }
-.stTabs [data-baseweb="tab-highlight"],
-.stTabs [data-baseweb="tab-border"]{ display:none; }
+[data-testid="stTab"][aria-selected="true"] p{
+  color:var(--brand) !important; font-weight:600;
+}
+/* 选中项下面那条横线（1.62 用伪元素/边框实现，一并压掉） */
+[data-testid="stTab"][aria-selected="true"]::after{ display:none !important; }
 
 /* ---- 按钮：默认直角、无 hover 反馈 ---- */
-.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button{
+/* 用 data-testid 定位：.stButton > button 在 1.62 只匹配到一部分
+   （按钮外面多套了一层 div，不再是直接子级） */
+[data-testid="stButton"] button,
+[data-testid="stDownloadButton"] button,
+[data-testid="stFormSubmitButton"] button{
   border-radius:8px; border:1px solid var(--line); font-weight:500;
   padding:.48rem 1rem; transition:border-color .15s ease, color .15s ease;
 }
-.stButton > button:hover, .stDownloadButton > button:hover{
+[data-testid="stButton"] button:hover,
+[data-testid="stDownloadButton"] button:hover{
   border-color:var(--brand); color:var(--brand);
 }
-.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"]{
+[data-testid="stButton"] button[kind="primary"],
+[data-testid="stFormSubmitButton"] button[kind="primary"]{
   background:var(--brand); border-color:var(--brand); color:#fff;
 }
-.stButton > button[kind="primary"]:hover{ color:#fff; border-color:var(--brand); opacity:.92; }
+[data-testid="stButton"] button[kind="primary"]:hover{
+  color:#fff; border-color:var(--brand); opacity:.92;
+}
 
 /* ---- 容器与折叠面板 ---- */
 [data-testid="stExpander"]{
@@ -88,6 +131,9 @@ h3{ font-weight:600 !important; font-size:1.05rem !important; }
 
 /* ---- 杂项：分割线太黑、输入框直角 ---- */
 hr{ margin:1.5rem 0 !important; border-color:var(--line) !important; }
+[data-testid="stTextArea"] textarea,
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
 .stTextArea textarea, .stTextInput input, .stNumberInput input{
   border-radius:8px !important;
 }
@@ -100,8 +146,13 @@ hr{ margin:1.5rem 0 !important; border-color:var(--line) !important; }
      Streamlit 的 HTML 里塞 <a href="?view=..."> 会触发整页重载，
      刚分析完的句子、刚生成的片段全会丢。
      现在改成 st.container + 真按钮：点击只是 session_state 变一下，
-     界面瞬间切换，状态一个不丢。CSS 负责把它们伪装成原来的卡片。 */
-[data-testid="stVerticalBlockBorderWrapper"]:has(.hero-anchor){
+     界面瞬间切换，状态一个不丢。CSS 负责把它们伪装成原来的卡片。
+
+   ★ 选择器说明：1.62 里 st.container(border=True) 不再包一层
+     stVerticalBlockBorderWrapper，border 直接画在 stVerticalBlock 上。
+     所以改用「直接子级里有 stElementContainer、且后代含 .hero-anchor 的
+     stVerticalBlock」来定位，避免误伤外层容器。 */
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .hero-anchor){
   background:var(--card);
   border:1px solid var(--line) !important;
   border-left:3px solid var(--brand) !important;
@@ -115,10 +166,10 @@ hr{ margin:1.5rem 0 !important; border-color:var(--line) !important; }
 .hero-sub{ font-size:.86rem; color:var(--muted); margin-top:5px; }
 
 /* 四张卡的小标签（段位/积分/连击/今日任务） */
-[data-testid="stVerticalBlockBorderWrapper"]:has(.hero-anchor) [data-testid="stCaptionContainer"]{
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .hero-anchor) [data-testid="stCaptionContainer"]{
   margin:0 0 3px 3px; min-height:0;
 }
-[data-testid="stVerticalBlockBorderWrapper"]:has(.hero-anchor) [data-testid="stCaptionContainer"] p{
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .hero-anchor) [data-testid="stCaptionContainer"] p{
   font-size:.7rem; color:var(--muted); letter-spacing:.06em; line-height:1.2;
 }
 
@@ -217,12 +268,44 @@ hr{ margin:1.5rem 0 !important; border-color:var(--line) !important; }
 .week-row{ display:flex; align-items:center; gap:10px; font-size:.8rem; }
 .week-d{ width:78px; flex:none; color:var(--muted); font-variant-numeric:tabular-nums; }
 .week-bar{ flex:1; height:13px; background:#F1EFE8; border-radius:4px; overflow:hidden; }
-.week-fill{ height:100%; background:var(--brand); border-radius:4px; }
+.week-fill{
+  display:block;              /* ★ span 默认是 inline，inline 元素的 width/height 会被忽略，
+                                 结果就是"条永远是空的、但右边的分数是对的" */
+  height:100%; background:var(--brand); border-radius:4px;
+}
 .week-p{
   width:56px; flex:none; text-align:right; color:var(--ink);
   font-variant-numeric:tabular-nums;
 }
 .week-p.zero{ color:#B0AEA6; }
+
+/* ---- 间隔重复：复习卡 ---- */
+.srs-due-title{ font-size:1.05rem; color:var(--ink); }
+.srs-due-title b{ color:var(--brand); font-size:1.35rem; }
+.srs-due-sub{ font-size:.78rem; color:var(--muted); margin-top:4px; }
+
+.srs-card{
+  background:var(--card); border:1px solid var(--line);
+  border-radius:var(--radius); padding:38px 24px; text-align:center;
+  margin:6px 0 10px;
+}
+.srs-word{
+  font-size:2rem; font-weight:600; color:var(--ink); letter-spacing:-.01em;
+  font-family:"Georgia", "Times New Roman", serif;
+}
+.srs-meta{ font-size:.76rem; color:var(--muted); margin-top:10px; }
+.srs-ans{
+  margin-top:18px; padding-top:18px; border-top:1px solid var(--line);
+  font-size:.95rem; color:var(--ink); text-align:left;
+}
+.srs-ans .srs-meaning{ font-size:1.02rem; color:var(--brand); font-weight:500; }
+.srs-ans .srs-example{
+  font-size:.85rem; color:var(--muted); margin-top:8px; line-height:1.6;
+  white-space:pre-wrap;
+}
+.srs-hint{
+  text-align:center; font-size:.8rem; color:var(--muted); margin-top:10px;
+}
 
 /* ---- 条形图（错误画像用；不用 st.bar_chart 是因为中文字体在
        altair 默认主题下会掉字，而且配色跟本站主题对不上）---- */
@@ -237,12 +320,14 @@ hr{ margin:1.5rem 0 !important; border-color:var(--line) !important; }
   overflow:hidden;
 }
 .bar-fill{
+  display:block;              /* 同上：inline span 上写 width 无效，条会整条消失 */
   height:100%; border-radius:5px; background:var(--brand);
   transition:width .4s ease;
 }
 .bar-fill.dim{ background:#B9CFC8; }
 .bar-val{
-  width:64px; flex:none; font-size:.78rem; color:var(--muted);
+  width:84px; flex:none; font-size:.78rem; color:var(--muted);  /* 64px 放不下"4 次 · 40.0%"，会折行 */
+  text-align:right; white-space:nowrap;
   font-variant-numeric:tabular-nums;
 }
 </style>

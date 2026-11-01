@@ -141,6 +141,7 @@ _task_rows = [
     ("🧠 完成 1 次句子分析", database.task_done_today(_uid, "完成句子分析"), 5),
     ("💎 收编 1 个生词", database.task_done_today(_uid, "收编生词"), 2),
     ("📖 阅读 1 篇 AI 片段", database.task_done_today(_uid, "阅读片段"), 8),
+    ("🔁 复习一组生词", database.task_done_today(_uid, "复习生词"), 3),
 ]
 _done_count = sum(1 for _n, _d, _r in _task_rows if _d)
 
@@ -557,4 +558,4 @@ with tab_profile:
 
 # ---------- 9. 页脚 ----------
 st.divider()
-st.caption("🇬🇧 地道英语思维训练器 · 测评基于 Beglar & Nation (2007) VST · 数据只保存在本地")
+st.caption("📘 地道英语思维训练器 · 测评基于 Beglar & Nation (2007) VST · 数据只保存在本地")

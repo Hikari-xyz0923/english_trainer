@@ -11,6 +11,8 @@ import bcrypt                 # 负责把密码变成“指纹"
 from datetime import datetime
 from pathlib import Path
 
+import srs                    # 间隔重复算法（纯函数，本模块只调不改）
+
 # 使用模块所在目录的绝对路径，避免从其他目录启动 Streamlit 时 SQLite 无法打开。
 DB_NAME = str(Path(__file__).resolve().with_name("history.db"))
 
@@ -742,3 +744,132 @@ def get_total_checkins(user_id):
     n = c.fetchone()[0]
     conn.close()
     return n
+
+
+# ==================== 间隔重复（生词复习排期）====================
+# 算法在 srs.py，这里只负责存取。分开的理由：算法要能被单独跑测试，
+# 而且以后想换成 FSRS 之类，只要改 srs.py，不用动 SQL。
+
+def ensure_srs_columns():
+    """透明迁移：给 collected_words 补上间隔重复需要的五列。
+
+    为什么用 PRAGMA 先查列再 ALTER，而不是 try/except：
+      SQLite 的 ALTER TABLE 失败会让整个事务进入异常状态，
+      在一个循环里连续 try 五条，前一条失败后后面可能全失败。
+      先查一次表结构，只补缺的那几列，最稳。
+    """
+    conn = get_connection()
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(collected_words)")}
+    additions = [
+        ("ease", "REAL DEFAULT 2.5"),        # 难度因子
+        ("interval_days", "INTEGER DEFAULT 0"),   # 当前间隔（天）
+        ("reps", "INTEGER DEFAULT 0"),       # 连续答对次数
+        ("lapses", "INTEGER DEFAULT 0"),     # 累计忘了几次
+        ("due_date", "TEXT"),                # 下次复习日（NULL = 新词，今天就能复习）
+    ]
+    for name, decl in additions:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE collected_words ADD COLUMN {name} {decl}")
+    conn.commit()
+    conn.close()
+
+
+def get_due_words(user_id, limit=20):
+    """今天该复习的词。返回 [(id, 表达, 释义, 用法, 出处, ease, interval, reps, lapses, due), ...]
+
+    排序规则：**到期的旧词在前，没复习过的新词在后**。
+      反过来（新词优先）的话，攒了 50 个新词，那些"明天就要忘"的旧词
+      永远排不到，间隔重复就白做了。
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, expression, meaning, usage, source, "
+        "       ease, interval_days, reps, lapses, due_date "
+        "FROM collected_words "
+        "WHERE user_id = ? AND (due_date IS NULL OR due_date <= date('now','localtime')) "
+        "ORDER BY CASE WHEN due_date IS NULL THEN 1 ELSE 0 END, "
+        "         due_date ASC, id ASC "
+        "LIMIT ?",
+        (user_id, int(limit))
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def count_due_words(user_id):
+    """今天到期（含新词）的词数——首页那个"N 个待复习"就是它。"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT COUNT(*) FROM collected_words "
+        "WHERE user_id = ? AND (due_date IS NULL OR due_date <= date('now','localtime'))",
+        (user_id,)
+    )
+    n = c.fetchone()[0]
+    conn.close()
+    return n
+
+
+def apply_review(word_id, user_id, quality):
+    """给一个词打一次分，按 SM-2 算出下次复习日期并写回。
+
+    返回 (ease, interval, reps, lapses, due_date)；词不存在返回 None。
+
+    为什么先读再算再写，而不是一条 SQL 搞定：
+      SM-2 依赖当前 ease/interval/reps 三个值，纯 SQL 写不出来，
+      而且算法要能单测。这里多一次 SELECT 换来可读性和可测性，值。
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT ease, interval_days, reps, lapses FROM collected_words "
+        "WHERE id = ? AND user_id = ?",
+        (word_id, user_id)
+    )
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    new_ease, new_interval, new_reps, new_lapses, due = srs.review(
+        row[0], row[1], row[2], row[3], quality
+    )
+    c.execute(
+        "UPDATE collected_words SET ease = ?, interval_days = ?, reps = ?, "
+        "       lapses = ?, due_date = ? WHERE id = ? AND user_id = ?",
+        (new_ease, new_interval, new_reps, new_lapses, due.isoformat(), word_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+    return new_ease, new_interval, new_reps, new_lapses, due
+
+
+def get_srs_stats(user_id):
+    """生词本的整体状态：总数 / 待复习 / 学习中的 / 已掌握的。
+
+    口径说明：新词（reps=0）算"待复习"也算"学习中的"，
+    因为它确实还没掌握；"已掌握"只看间隔是否撑过 21 天。
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT "
+        "  COUNT(*), "
+        "  SUM(CASE WHEN due_date IS NULL OR due_date <= date('now','localtime') "
+        "           THEN 1 ELSE 0 END), "
+        "  SUM(CASE WHEN reps > 0 AND COALESCE(interval_days,0) < 21 "
+        "           THEN 1 ELSE 0 END), "
+        "  SUM(CASE WHEN COALESCE(interval_days,0) >= 21 THEN 1 ELSE 0 END) "
+        "FROM collected_words WHERE user_id = ?",
+        (user_id,)
+    )
+    row = c.fetchone()
+    conn.close()
+    return {
+        "total": row[0] or 0,
+        "due": row[1] or 0,
+        "learning": row[2] or 0,
+        "mature": row[3] or 0,
+    }

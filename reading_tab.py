@@ -6,11 +6,14 @@
 #   render_library  📚 片段图书馆（公版名著 + AI 生成）
 #   render_words    📖 我的生词本
 # ============================================================
+import html
+
 import streamlit as st
 
 import database
 import glm_api
 import reading_content
+import srs
 import vst_data
 
 
@@ -20,6 +23,13 @@ def clear_vst_state():
     退出登录时一个 vst_ 状态都没清掉。"""
     for key in list(st.session_state.keys()):
         if key.startswith("vst_"):
+            st.session_state.pop(key, None)
+
+
+def clear_review_state():
+    """清掉复习会话的临时状态（退出登录时调用，防止换账号后接上别人的队列）。"""
+    for key in list(st.session_state.keys()):
+        if key.startswith("srs_"):
             st.session_state.pop(key, None)
 
 
@@ -421,11 +431,200 @@ def render_library():
                         st.rerun()
 
 
+# ============================================================
+# 间隔重复复习（SM-2 变体）
+#   生词本原来只负责"存"，这里负责"什么时候再考一次"。
+#   三层分工：算法在 srs.py（纯函数、可单测），排期在 database（存取），
+#   这里只管流程和界面。以后想换 FSRS，只动 srs.py 一个文件。
+# ============================================================
+
+SRS_BATCH = 20      # 一次最多复习多少个：贪多只会让人第二天不敢点开
+
+
+def _srs_start():
+    """开始一次复习：把今天该复习的词拉成队列，快照进 session。"""
+    uid = st.session_state["user_id"]
+    rows = database.get_due_words(uid, SRS_BATCH)
+    if not rows:
+        st.session_state["srs_mode"] = False
+        return
+    st.session_state["srs_queue"] = [r[0] for r in rows]
+    st.session_state["srs_data"] = {r[0]: r for r in rows}
+    st.session_state["srs_idx"] = 0
+    st.session_state["srs_reveal"] = False
+    st.session_state["srs_result"] = {"good": 0, "vague": 0, "forgot": 0}
+    st.session_state["srs_mode"] = True
+    st.session_state["srs_awarded"] = False
+
+
+def _srs_exit():
+    for key in ["srs_mode", "srs_queue", "srs_idx", "srs_reveal",
+                "srs_data", "srs_result", "srs_awarded"]:
+        st.session_state.pop(key, None)
+
+
+def _srs_reveal():
+    st.session_state["srs_reveal"] = True
+
+
+def _srs_grade(word_id, quality):
+    """打分 → 写库 → 队列前进一个。
+
+    为什么用 on_click 回调而不是 if st.button(...)：
+      回调在脚本重跑之前执行，所以下一次渲染时 idx 已经是新值，
+      不会出现"分已经记了、卡片还停在原地"的闪一帧。
+    """
+    uid = st.session_state["user_id"]
+    database.apply_review(word_id, uid, quality)
+
+    res = st.session_state["srs_result"]
+    if quality <= srs.QUALITY_FORGOT:
+        res["forgot"] += 1
+    elif quality < srs.QUALITY_GOOD:
+        res["vague"] += 1
+    else:
+        res["good"] += 1
+
+    # 今天第一次复习就 +3 分。规则和句子分析一致：每天只发一次，评一个词就够
+    if not st.session_state.get("srs_awarded"):
+        if database.award_once_today(uid, 3, "复习生词"):
+            st.session_state["srs_awarded"] = True
+
+    st.session_state["srs_idx"] += 1
+    st.session_state["srs_reveal"] = False
+
+
+def _srs_panel(user_id):
+    """生词本顶部那块：入口 / 复习中 / 小结，三态互斥。"""
+    if st.session_state.get("srs_mode"):
+        _srs_reviewing(user_id)
+        return
+
+    stats = database.get_srs_stats(user_id)
+    if stats["total"] == 0:
+        return
+
+    if stats["due"] == 0:
+        st.success(
+            f"✅ 今天的复习做完了 · {stats['total']} 个词里，"
+            f"{stats['mature']} 个已掌握"
+        )
+        return
+
+    n = min(stats["due"], SRS_BATCH)
+    more = "（一次最多 20 个）" if stats["due"] > SRS_BATCH else ""
+    with st.container(border=True):
+        c1, c2 = st.columns([3, 1], vertical_alignment="center")
+        with c1:
+            st.markdown(
+                f'<div class="srs-due-title">今天该复习 <b>{stats["due"]}</b> 个{more}</div>'
+                f'<div class="srs-due-sub">共 {stats["total"]} 个 · '
+                f'学习中 {stats["learning"]} · 已掌握 {stats["mature"]}</div>',
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.button(f"🚀 开始（{n} 个）", key="srs_start", type="primary",
+                      width="stretch", on_click=_srs_start)
+
+
+def _srs_reviewing(user_id):
+    """复习进行中：一次只显示一个词。"""
+    queue = st.session_state["srs_queue"]
+    idx = st.session_state["srs_idx"]
+    if idx >= len(queue):
+        _srs_summary(user_id)
+        return
+
+    word_id = queue[idx]
+    _wid, expr, meaning, usage, source, ease, interval, reps, lapses, due = \
+        st.session_state["srs_data"][word_id]
+
+    st.progress(idx / len(queue), text=f"第 {idx + 1} / {len(queue)} 个")
+
+    # ---- 卡片：正面只有词，翻面才给释义 ----
+    ans_html = ""
+    if st.session_state.get("srs_reveal"):
+        if meaning:
+            meaning_html = f'<div class="srs-meaning">{html.escape(meaning)}</div>'
+        else:
+            meaning_html = ('<div class="srs-meaning">这个词还没补过释义——'
+                            '先「忘了」，回头到列表里点「AI 补课」。</div>')
+        usage_html = f'<div class="srs-example">{html.escape(usage)}</div>' if usage else ""
+        ans_html = f'<div class="srs-ans">{meaning_html}{usage_html}</div>'
+
+    bits = []
+    if reps:
+        bits.append(f"第 {reps + 1} 次复习")
+    if lapses:
+        bits.append(f"忘过 {lapses} 次")
+    bits.append(f"上次间隔 {interval} 天" if interval else "第一次见")
+    meta = " · ".join(bits)
+
+    st.markdown(
+        f'<div class="srs-card">'
+        f'<div class="srs-word">{html.escape(expr)}</div>'
+        f'<div class="srs-meta">{meta}</div>'
+        f'{ans_html}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.get("srs_reveal"):
+        st.button("👁 显示答案", key="srs_reveal_btn", width="stretch",
+                  on_click=_srs_reveal)
+        st.markdown(
+            '<div class="srs-hint">先在心里想一下意思再翻面——'
+            '直接翻面等于没考自己。</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        b1, b2, b3 = st.columns(3)
+        b1.button("👎 忘了", key="srs_q1", width="stretch",
+                  on_click=_srs_grade, args=(word_id, srs.QUALITY_FORGOT))
+        b2.button("🤔 模糊", key="srs_q3", width="stretch",
+                  on_click=_srs_grade, args=(word_id, srs.QUALITY_VAGUE))
+        b3.button("✅ 记得", key="srs_q5", width="stretch", type="primary",
+                  on_click=_srs_grade, args=(word_id, srs.QUALITY_GOOD))
+        st.markdown(
+            '<div class="srs-hint">「记得」会把下次见面推到一个月后。'
+            '骗自己，等于以后再也见不到这个词。</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.button("先到这里", key="srs_quit", on_click=_srs_exit)
+
+
+def _srs_summary(user_id):
+    """一轮复习做完的小结。"""
+    res = st.session_state["srs_result"]
+    total = sum(res.values())
+
+    st.success(f"这一轮复习了 {total} 个。")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("✅ 记得", res["good"])
+    c2.metric("🤔 模糊", res["vague"])
+    c3.metric("👎 忘了", res["forgot"])
+
+    left = database.count_due_words(user_id)
+    if left:
+        st.caption(f"今天还有 {left} 个到期。一次最多 20 个，可以再来一轮。")
+    else:
+        st.caption("今天的到期词全清了。明天再来。")
+
+    st.button("结束这次复习", key="srs_done", type="primary", on_click=_srs_exit)
+
+
 def render_words():
     """📖 生词本 子页。"""
 
     # ==================== 7.4 我的生词本 ====================
     st.subheader("📖 我的生词本")
+
+    # 间隔重复：今天该复习的先摆出来，其他内容往后放
+    database.ensure_srs_columns()
+    _srs_panel(st.session_state["user_id"])
+    st.divider()
+
     my_words = database.get_collected_words(st.session_state["user_id"])
     if len(my_words) == 0:
         st.info("生词本还是空的——在上方片段里点「💎 一键收编」，词汇积累从现在开始！")
