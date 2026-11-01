@@ -186,11 +186,26 @@ def generate_daily_article(vocab_size):
 PASSAGE_FACTORY_PROMPT = """你是英语分级阅读材料编辑，兼风格仿写大师。请生成一段"风格化阅读片段"，严格满足：
 
 1. 【风格自选】叙事风格由你自行轮换：可以模仿已故经典作家的笔触（如奥斯汀、狄更斯、海明威、
-   菲茨杰拉德、马克·吐温、柯南·道尔、爱伦·坡等——仅举例），也可以用现代轻小说、悬疑、
-   科幻、日系治愈系的写法。每次换一种，让每篇的"手感"都不同。
-2. 【题材自选】情节、人物、时代背景完全由你自由创作。题材没有任何禁区：
-   动漫、虚拟歌手、游戏、校园、科幻、奇幻、都市传说、体育、日常……
-   都可以写，越贴近真实生活、越新鲜越好，严禁俗套开局。
+   菲茨杰拉德、马克·吐温、柯南·道尔、爱伦·坡等——仅举例），也可以用现代轻小说、社会派悬疑、
+   日系治愈系、口语纪实的写法。每次换一种，让每篇的"手感"都不同。
+2. 【题材自选，但必须从具体的生活切口起手】情节、人物、时代由你自由创作，题材没有禁区。
+   但以下六条是硬约束：
+   ① 必须从一个具体的人、一个具体的时刻、一个具体的物件起手。
+      反面：先交代世界观、先描写环境、先"据说过往"。
+      正面：直接写这个人此刻在做什么，动作先行。
+   ② 严禁宏大科幻题材：太空旅行、星际殖民、外星文明、时间机器、末世废土、赛博朋克、
+      AI 觉醒——这些是"自由创作"最容易滑向的俗套，本栏目已经写腻了，一律不许写。
+      如果真想写未来，就写未来里一个普通人的一个普通下午，别写宇宙战争。
+   ③ 严禁"深夜文艺"套路。时段不许默认设在午夜或深夜，也不许写"孤独的人 + 钢琴/雨/月光"。
+      每篇的时间请落在：清晨、上午、午休、傍晚、晚饭后——任选，别老挑夜里。
+      故事要发生在有人在场的地方：有人插话、有人催促、有人看热闹。
+   ④ 人物必须有具体的社会关系，不是孤零零的一个人：同事、亲戚、房东、教练、
+      店员、网友、老同学。冲突来自关系里的摩擦（面子、误会、欠的人情），不用内心独白凑。
+   ⑤ 越贴近真实生活越好。一个普通人的尴尬、误会、犹豫、口是心非，
+      比任何世界观设定都更有故事。严禁俗套开局（醒来、闹钟、下雨的葬礼）。
+   ⑥ 第一句必须是"此时此地此人"，直接落在一个具体的动作上。
+      禁止用 It was said that… / Long ago… / There was once… / In a world where… /
+      The clock struck midnight… 这类开场，也不要先介绍地点背景再进入人物。
 3. 【原创铁律】必须是全新原创故事。严禁复述任何真实作品（游戏、动漫、小说、影视）的情节与原文。
 4. 难度：按用户词汇量控制（3000 以下全文用最常用词；每高 2000，允许 3~4 个略难词）。
 5. 长度：    正文长度要求：250～1000 个英文单词，难度越大越长。必须是一个完整的小故事
@@ -198,7 +213,7 @@ PASSAGE_FACTORY_PROMPT = """你是英语分级阅读材料编辑，兼风格仿�
 6. 输出严格按以下格式（程序要按此解析，一行都不能错、不能增删标签）：
 
 标题：（吸引人的中英双语标题，如：深夜灯塔 The Lighthouse Keeper）
-领域：（用中文短语概括本篇题材，8 字以内，如：术力口告别演唱会 / 校园悬疑 / 废土唱片店）
+领域：（用中文短语概括本篇题材，8 字以内，如：术力口告别演唱会 / 校园悬疑 / 深夜洗衣店）
 风格：（用一句话注明"本段模仿【风格或作家名】原创"，如：本段模仿海明威风格原创 / 本段用日系轻小说笔法原创）
 难度：🌱入门 或 🌿进阶 或 🌳挑战
 导读：（一句话中文导读，点出你模仿了谁的什么神韵）
@@ -208,27 +223,57 @@ PASSAGE_FACTORY_PROMPT = """你是英语分级阅读材料编辑，兼风格仿�
 （3 个地道表达，每行一个，格式：expression —— 中文解释）"""
 
 
-def generate_library_passage(vocab_size):
+def generate_library_passage(vocab_size, avoid_domains=None):
     """生成一段图书馆片段（题材由 AI 自由决定，返回时自带 domain 标签）。
+
+    avoid_domains: 库里最近写过的领域标签。传进来是为了让 AI 主动避开重复——
+    没有这个，模型每 10 次里有 7 次会滑向太空/末日这类"高概念"题材，
+    因为它最容易编出完整冲突，也最省力。
     解析失败会抛异常，由界面层弹错误提示。"""
     # ---- 把词汇量换算成 Zipf 门槛，让合约从"模糊叮嘱"升级为"量化条款" ----
     from vocabulary_scanner import vocab_to_threshold
     threshold = vocab_to_threshold(vocab_size)   # 安检和换算都在那个函数里做好了
 
+    # ---- 组装"别重复"的清单：库里已有的题材，明确点名让 AI 换 ----
+    avoid_block = ""
+    if avoid_domains:
+        seen = [d for d in dict.fromkeys(avoid_domains) if d and d != "AI 自由选题"]
+        if seen:
+            recent = seen[:10]          # 调用方按"最新在前"传入，取前 10 条即最近的
+            avoid_block = (
+                "\n\n【已用过的题材，本次必须避开】"
+                + "、".join(recent)
+                + f"\n上面这 {len(recent)} 个题材近期已经写过了。本次不许重复，"
+                  "也不许换汤不换药（把洗衣店改成自助澡堂不算新）。"
+                  "换一个完全不同的生活场景和人物关系。"
+            )
+
+    # 用列表 + "\n".join 拼，别在 f-string 里断行（那样会直接 SyntaxError）
+    scene_hint = ("校园、便利店、早高峰的公交、家庭餐桌、公司茶水间、后台、球场、"
+                  "排练室、医院走廊、老小区楼道、菜市场、驾校、快递驿站")
+    user_parts = [
+        f"读者词汇量约 {vocab_size}。请开始创作。",
+        "",
+        "【本次主题】完全由你自由决定——想一个新鲜、出人意料、"
+        f"但从具体生活切进去的题材（{scene_hint}……都可以，"
+        "也可以是这些场景里某个奇怪的瞬间），写进输出格式的「领域：」那一行。",
+        "绝不要写太空、星际、外星、末世、赛博朋克。",
+        "情节、人物、切入角度同样归你，不许俗套开局。",
+    ]
+    if avoid_block:
+        user_parts.append(avoid_block)
+    user_parts += [
+        "",
+        "【难度量化条款】本文正文中，约 98% 的单词必须是日常生活中"
+        f"常见的高频词（Zipf 频率分数高于 {threshold}）；"
+        f"仅允许约 2% 的单词稍微罕见一些（Zipf 分数在 {threshold} 附近或略低），"
+        "这些少量生词正是读者的学习材料。"
+        f"严禁大量使用 Zipf 分数低于 {threshold} 的罕见词。",
+    ]
+
     messages = [
         {"role": "system", "content": PASSAGE_FACTORY_PROMPT},
-        {"role": "user", "content":
-            f"读者词汇量约 {vocab_size}。请开始创作。"
-            f"\n\n【本次主题】完全由你自由决定——想一个新鲜的、出人意料的题材"
-            f"（动漫、虚拟歌手、游戏、校园、科幻、都市传说、日常、体育……都可以，"
-            f"也可以完全跳出这些），写进输出格式的「领域：」那一行。"
-            f"情节、人物、切入角度同样归你，不许俗套开局。"
-            f"\n\n【难度量化条款】本文正文中，约 98% 的单词必须是日常生活中"
-            f"常见的高频词（Zipf 频率分数高于 {threshold}）；"
-            f"仅允许约 2% 的单词稍微罕见一些（Zipf 分数在 {threshold} 附近或略低），"
-            f"这些少量生词正是读者的学习材料。"
-            f"严禁大量使用 Zipf 分数低于 {threshold} 的罕见词。"
-        },
+        {"role": "user", "content": "\n".join(user_parts)},
     ]
     payload = {"model": MODEL, "messages": messages, "temperature": 0.9}
     headers = {"Content-Type": "application/json",
@@ -246,9 +291,18 @@ def generate_library_passage(vocab_size):
     domain = ""
 
     def grab(pattern, source, flags=0):
-        """小工具：安全版 re.search——找到了返回内容，找不到返回空字符串"""
+        """小工具：安全版 re.search——找到了返回内容，找不到返回空字符串。
+        顺手剥掉 AI 爱照抄的示例括号：它会生成「领域：（校园奇遇 / Schooltime Adventure）」，
+        直接把提示里的填空括号当格式抄下来。"""
         m = re.search(pattern, source, flags)
-        return m.group(1).strip() if m else ""
+        if not m:
+            return ""
+        s = m.group(1).strip()
+        pairs = [("（", "）"), ("(", ")"), ("【", "】"), ("[", "]")]
+        for left, right in pairs:
+            if s.startswith(left) and s.endswith(right):
+                s = s[len(left):-len(right)].strip()
+        return s
 
     title = grab(r"标题：\n?(.+?)(?=\n领域：|\s*领域：)", raw)
     domain = grab(r"领域：\n?(.+?)(?=\n风格：|\s*风格：)", raw)
@@ -405,5 +459,8 @@ def simplify_passage(passage, hard_words):
     text  = re.search(r"正文：\n?(.+?)(?=\n表达：|\s*表达：)", raw, re.DOTALL).group(1).strip()
     expr_block = re.search(r"表达：\n?(.+)", raw, re.DOTALL).group(1).strip()
     exprs = [line.strip("- ").strip() for line in expr_block.split("\n") if line.strip()]
+    # 批改只动措辞和难度，题材没变 —— domain 必须从原稿继承，
+    # 否则界面会把这段显示成"AI 自由选题"（旧 bug）。
     return {"title": title, "level": level, "intro": intro,
+            "domain": passage.get("domain", "AI 自由选题"),
             "text": text, "expressions": exprs}

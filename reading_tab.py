@@ -265,13 +265,18 @@ def render_library():
 
         if "making_passage" in st.session_state:
             from vocabulary_scanner import coverage_report, find_hard_words
+            # 库里已经写过的题材 → 传给 AI 让它避开（否则它会一直写太空/末日）
+            # get_all_passages() 是"最新在前"（ORDER BY id DESC），所以取前 12 条才是最近的
+            used_domains = [row[3] for row in database.get_all_passages()][:12]
             with st.spinner("🤖 AI 正在自由选题、创作片段……（题材它自己想）"):
                 best_p, best_cov = None, -1    # "历届最佳"：最优片段 + 它的覆盖率
                 last_err = None                # 记下最后一稿为什么失败，别再让界面只说一句"生成失败"
                 # ---- 第一阶段：盲写，最多 3 稿，先摸个高分 ----
                 for attempt in range(3):
                     try:
-                        p = glm_api.generate_library_passage(ai_vocab)
+                        p = glm_api.generate_library_passage(ai_vocab, used_domains)
+                        # 这一稿的题材插到最前（清单约定"最新在前"），防止 3 稿写成同一个故事
+                        used_domains = [p.get("domain", "")] + used_domains
                         cov = coverage_report(p["text"], ai_vocab)["coverage"]
                         st.toast(f"第 {attempt + 1} 稿：覆盖率 {cov}%")
                         if cov > best_cov:
